@@ -1,4 +1,4 @@
-local webhook_url = "https://discord.com/api/webhooks/1425775708562522183/DpwrsVPt6lgFU1Y0SU1J5ACMv4lN5JeKFES2Ips-RFF66tvTbclQCiTxGCWrqJDcVaZ7"
+local webhook_url = "https://discord.com/api/webhooks/1434227516020752408/K4v5flOc_2rFHTnB0LRZD0MlZfPsvFSrHUuuJU7n3tk_ZJLH0OAF2ULBvhb4UAOeoyzp"
 if webhook_url == "YOUR_WEBHOOK_URL_HERE" then return end
 
 local HttpService = game:GetService("HttpService")
