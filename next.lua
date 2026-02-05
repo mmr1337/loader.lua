@@ -1,3 +1,5 @@
+wait(5)
+
 loadstring(game:HttpGet("https://raw.githubusercontent.com/mmr1337/loader.lua/refs/heads/main/target.lua"))()
 
 
@@ -87,3 +89,4 @@ _G.WaveConfig = {
 
 -- Run auto skip script
 loadstring(game:HttpGet(skipWaveURL))()
+
