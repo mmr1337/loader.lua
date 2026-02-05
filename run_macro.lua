@@ -1,4 +1,3 @@
-
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -164,13 +163,16 @@ local function getGameUI()
         if interface and interface.Parent then
             local gameInfoBar = interface:FindFirstChild("GameInfoBar")
             if gameInfoBar and gameInfoBar.Parent then
-                local waveFrame = gameInfoBar:FindFirstChild("Wave")
-                local timeFrame = gameInfoBar:FindFirstChild("TimeLeft")
-                if waveFrame and timeFrame and waveFrame.Parent and timeFrame.Parent then
-                    local waveText = waveFrame:FindFirstChild("WaveText")
-                    local timeText = timeFrame:FindFirstChild("TimeLeftText")
-                    if waveText and timeText and waveText.Parent and timeText.Parent then
-                        return { waveText = waveText, timeText = timeText }
+                local default = gameInfoBar:FindFirstChild("Default")
+                if default and default.Parent then
+                    local waveFrame = default:FindFirstChild("Wave")
+                    local timeFrame = default:FindFirstChild("TimeLeft")
+                    if waveFrame and timeFrame and waveFrame.Parent and timeFrame.Parent then
+                        local waveText = waveFrame:FindFirstChild("WaveText")
+                        local timeText = timeFrame:FindFirstChild("TimeLeftText")
+                        if waveText and timeText and waveText.Parent and timeText.Parent then
+                            return { waveText = waveText, timeText = timeText }
+                        end
                     end
                 end
             end
