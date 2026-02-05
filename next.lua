@@ -1,7 +1,6 @@
 
 
 
-
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 
@@ -11,6 +10,7 @@ local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 
 -- urls
+local mapURL = "https://raw.githubusercontent.com/mmr1337/loader.lua/refs/heads/main/target.lua"
 local remoteKeyURL = "https://raw.githubusercontent.com/mmr1337/loader.lua/refs/heads/main/key.txt" -- URL để lấy key
 local jsonURL = "https://raw.githubusercontent.com/mmr1337/loader.lua/refs/heads/main/x.json"
 local loaderURL = "https://raw.githubusercontent.com/mmr1337/loader.lua/refs/heads/main/loader.lua"
