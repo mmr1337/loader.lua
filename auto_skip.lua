@@ -20,7 +20,7 @@ local NetworkingHandler = require(Common:WaitForChild("NetworkingHandler"))
 NetworkingHandler.GetEvent("SkipWaveVoteStateUpdate"):AttachCallback(function(data)
     if not data.VotingEnabled then return end
 
-    local waveText = PlayerGui.Interface.GameInfoBar.Wave.WaveText.Text
+    local waveText = PlayerGui.Interface.GameInfoBar.Default.Wave.WaveText.Text
     local waveName = string.upper(waveText)
     local configValue = _G.WaveConfig[waveName]
 
@@ -34,7 +34,7 @@ NetworkingHandler.GetEvent("SkipWaveVoteStateUpdate"):AttachCallback(function(da
         local mins = math.floor(number / 100)
         local secs = number % 100
         local targetTimeStr = string.format("%02d:%02d", mins, secs)
-        local currentTime = PlayerGui.Interface.GameInfoBar.TimeLeft.TimeLeftText.Text
+        local currentTime = PlayerGui.Interface.GameInfoBar.Default.TimeLeft.TimeLeftText.Text
         if currentTime == targetTimeStr then
             debugPrint("đang skip wave:", waveName, "| thời gian:", currentTime)
             SkipEvent:FireServer(true)
