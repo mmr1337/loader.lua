@@ -1,0 +1,6 @@
+local args = {
+	"Party"
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Network"):WaitForChild("ClientChangePartyTypeRequest"):FireServer(unpack(args))
+
+game:GetService("ReplicatedStorage"):WaitForChild("Network"):WaitForChild("ClientStartGameRequest"):FireServer()
