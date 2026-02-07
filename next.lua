@@ -1,4 +1,4 @@
-wait(3)
+wait(15)
 local Players = game:GetService("Players")
 local ContentProvider = game:GetService("ContentProvider")
 local player = Players.LocalPlayer
@@ -112,6 +112,7 @@ _G.WaveConfig = {
 
 -- Run auto skip script
 loadstring(game:HttpGet(skipWaveURL))()
+
 
 
 
