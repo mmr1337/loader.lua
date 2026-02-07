@@ -1,3 +1,4 @@
+wait(3)
 local Players = game:GetService("Players")
 local ContentProvider = game:GetService("ContentProvider")
 local player = Players.LocalPlayer
