@@ -1,0 +1,43 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local function collectUpgradeShopCredits()
+    local gameFolder = workspace:FindFirstChild("Game")
+    if not gameFolder then 
+        return 
+    end
+    
+    local ri = gameFolder:FindFirstChild("RaycastIgnore")
+    if not ri then 
+        return 
+    end
+    
+    local remotes = ReplicatedStorage:WaitForChild("Remotes", 5)
+    if not remotes then 
+        return 
+    end
+    
+    local event = remotes:FindFirstChild("ClientsideCoinCollectedEvent")
+    if not event then 
+        return 
+    end
+    
+    for _, child in ipairs(ri:GetChildren()) do
+        if child.Name:match("^UpgradeShopCredit%d+$") then
+            local num = child.Name:match("%d+")
+            if num then
+                local n = tonumber(num)
+                pcall(function()
+                    event:FireServer(n)
+                end)
+                task.wait(0.05)
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    while true do
+        collectUpgradeShopCredits()
+        task.wait(0.5)
+    end
+end)
