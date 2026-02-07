@@ -1,0 +1,95 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+
+local GITHUB_URL = "https://raw.githubusercontent.com/mmr1337/loader.lua/main/upgradeshop.json"
+local JSON_SOURCE = "tdx/upgradeshop.json"
+local SPAM_DELAY = 1
+local SUCCESS_DELAY = 0.5
+
+if makefolder then
+    pcall(makefolder, "tdx")
+end
+
+local function downloadJSON()
+    local success, result = pcall(game.HttpGet, game, GITHUB_URL)
+    if success and writefile then
+        pcall(writefile, JSON_SOURCE, result)
+        return true
+    end
+    return false
+end
+
+local function loadJSON(source)
+    local jsonContent
+    
+    if not isfile or not readfile then
+        return nil
+    end
+    
+    if not isfile(source) then
+        return nil
+    end
+    
+    local success, result = pcall(readfile, source)
+    if not success then
+        return nil
+    end
+    jsonContent = result
+    
+    local success2, decoded = pcall(HttpService.JSONDecode, HttpService, jsonContent)
+    if not success2 then
+        return nil
+    end
+    
+    return decoded
+end
+
+local function spamUntilSuccess(tower, upgradeType, cost)
+    while true do
+        local success, result = pcall(function()
+            return ReplicatedStorage.Remotes.UpgradeShopOperationRequest:InvokeServer(tower, upgradeType)
+        end)
+        
+        if not success then
+            task.wait(SPAM_DELAY)
+        elseif result == true then
+            return true
+        else
+            task.wait(SPAM_DELAY)
+        end
+    end
+end
+
+local function processAction(action, index, total)
+    if not action.UpgradeShopTower or not action.UpgradeShopType then
+        return false
+    end
+    
+    local tower = action.UpgradeShopTower
+    local upgradeType = action.UpgradeShopType
+    local cost = action.UpgradeShopCost or 0
+    
+    return spamUntilSuccess(tower, upgradeType, cost)
+end
+
+local function runMacro(actions)
+    if not actions or #actions == 0 then
+        return
+    end
+    
+    for i, action in ipairs(actions) do
+        local success = processAction(action, i, #actions)
+        
+        if success then
+            task.wait(SUCCESS_DELAY)
+        end
+    end
+end
+
+downloadJSON()
+
+local actions = loadJSON(JSON_SOURCE)
+
+if actions then
+    runMacro(actions)
+end
