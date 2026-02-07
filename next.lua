@@ -1,4 +1,26 @@
-wait(5)
+local Players = game:GetService("Players")
+local ContentProvider = game:GetService("ContentProvider")
+local player = Players.LocalPlayer
+
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+
+local character = player.Character or player.CharacterAdded:Wait()
+character:WaitForChild("HumanoidRootPart")
+
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+repeat
+    task.wait(0.1)
+until ContentProvider.RequestQueueSize == 0
+
+
+warn("load")
 
 loadstring(game:HttpGet("https://raw.githubusercontent.com/mmr1337/loader.lua/refs/heads/main/target.lua"))()
 
@@ -89,5 +111,6 @@ _G.WaveConfig = {
 
 -- Run auto skip script
 loadstring(game:HttpGet(skipWaveURL))()
+
 
 
