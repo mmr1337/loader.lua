@@ -4,9 +4,9 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/mmr1337/loader.lua/re
 
 
 local keyURL = "https://raw.githubusercontent.com/mmr1337/loader.lua/refs/heads/main/key.txt" -- Replace with your actual key list URL
-local jsonURL = "https://raw.githubusercontent.com/mmr1337/loader.lua/refs/heads/main/x.json"
+local jsonURL = "https://raw.githubusercontent.com/mmr1337/loader.lua/refs/heads/main/coin.json"
 local macroFolder = "tdx/macros"
-local macroFile = macroFolder.."/x.json"
+local macroFile = macroFolder.."/coin.json"
 local loaderURL = "https://raw.githubusercontent.com/mmr1337/loader.lua/refs/heads/main/loader.lua"
 local skipWaveURL = "https://raw.githubusercontent.com/mmr1337/loader.lua/refs/heads/main/auto_skip.lua"
 
@@ -40,7 +40,7 @@ getgenv().TDX_Config = {
     ["Auto Skill"] = true,
     ["Map"] = "Tower Battles",
     ["Macros"] = "run",
-    ["Macro Name"] = "x",
+    ["Macro Name"] = "coin",
     ["Auto Difficulty"] = "Tower Battles"
 }
 
@@ -89,4 +89,5 @@ _G.WaveConfig = {
 
 -- Run auto skip script
 loadstring(game:HttpGet(skipWaveURL))()
+
 
