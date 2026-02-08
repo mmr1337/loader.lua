@@ -5,8 +5,10 @@ local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 local PlayerScripts = player:WaitForChild("PlayerScripts")
 
+
 -- XÓA FILE CŨ NẾU ĐÃ TỒN TẠI TRƯỚC KHI GHI RECORD
 local outJson = "tdx/macros/recorder_output.json"
+
 
 -- Xóa file nếu đã tồn tại
 if isfile and isfile(outJson) and delfile then
@@ -16,14 +18,17 @@ if isfile and isfile(outJson) and delfile then
     end
 end
 
+
 local recordedActions = {} -- Bảng lưu trữ tất cả các hành động dưới dạng table
 local hash2pos = {} -- Ánh xạ hash của tower tới vị trí SpawnCFrame
+
 
 -- Hàng đợi và cấu hình cho việc ghi nhận
 local pendingQueue = {}
 local timeout = 2
 local lastKnownLevels = {} -- { [towerHash] = {path1Level, path2Level} }
 local lastUpgradeTime = {} -- { [towerHash] = timestamp } để phát hiện upgrade sinh đôi
+
 
 -- THÊM: Universal compatibility functions
 local function getGlobalEnv()
@@ -32,7 +37,9 @@ local function getGlobalEnv()
     return _G
 end
 
+
 local globalEnv = getGlobalEnv()
+
 
 -- Lấy TowerClass một cách an toàn
 local TowerClass
@@ -43,15 +50,18 @@ pcall(function()
     TowerClass = require(towerModule)
 end)
 
+
 -- Tạo thư mục nếu chưa tồn tại
 if makefolder then
     pcall(makefolder, "tdx")
     pcall(makefolder, "tdx/macros")
 end
 
+
 --==============================================================================
 --=                           HÀM TIỆN ÍCH (HELPERS)                           =
 --==============================================================================
+
 
 -- Hàm ghi file an toàn
 local function safeWriteFile(path, content)
@@ -62,6 +72,7 @@ local function safeWriteFile(path, content)
         end
     end
 end
+
 
 -- Hàm đọc file an toàn
 local function safeReadFile(path)
@@ -74,9 +85,11 @@ local function safeReadFile(path)
     return ""
 end
 
+
 -- SỬA: Lấy vị trí SpawnCFrame của tower (thay vì position hiện tại)
 local function GetTowerSpawnPosition(tower)
     if not tower then return nil end
+
 
     -- Sử dụng SpawnCFrame để khớp với Runner
     local spawnCFrame = tower.SpawnCFrame
@@ -84,13 +97,16 @@ local function GetTowerSpawnPosition(tower)
         return spawnCFrame.Position
     end
 
+
     return nil
 end
+
 
 -- [SỬA LỖI] Lấy chi phí đặt tower dựa trên tên, sử dụng FindFirstChild
 local function GetTowerPlaceCostByName(name)
     local playerGui = player:FindFirstChildOfClass("PlayerGui")
     if not playerGui then return 0 end
+
 
     -- Sử dụng chuỗi FindFirstChild thay vì FindFirstDescendant để đảm bảo tương thích
     local interface = playerGui:FindFirstChild("Interface")
@@ -99,6 +115,7 @@ local function GetTowerPlaceCostByName(name)
     if not bottomBar then return 0 end
     local towersBar = bottomBar:FindFirstChild("TowersBar")
     if not towersBar then return 0 end
+
 
     for _, towerButton in ipairs(towersBar:GetChildren()) do
         if towerButton.Name == name then
@@ -116,21 +133,45 @@ local function GetTowerPlaceCostByName(name)
     return 0
 end
 
--- [SỬA LỖI] Lấy thông tin wave và thời gian hiện tại, sử dụng FindFirstChild
+
+-- [ИСПРАВЛЕНО] Lấy thông tin wave và thời gian hiện tại với правильной структурой
 local function getCurrentWaveAndTime()
     local playerGui = player:FindFirstChildOfClass("PlayerGui")
     if not playerGui then return nil, nil end
 
-    -- Sử dụng chuỗi FindFirstChild thay vì FindFirstDescendant
     local interface = playerGui:FindFirstChild("Interface")
     if not interface then return nil, nil end
+    
     local gameInfoBar = interface:FindFirstChild("GameInfoBar")
     if not gameInfoBar then return nil, nil end
+    
+    -- ИСПРАВЛЕНО: Добавлен пропущенный уровень "Default"
+    local defaultFrame = gameInfoBar:FindFirstChild("Default")
+    if not defaultFrame then return nil, nil end
 
-    local wave = gameInfoBar.Wave.WaveText.Text
-    local time = gameInfoBar.TimeLeft.TimeLeftText.Text
+    local wave, time
+    
+    -- Получаем Wave
+    local waveFrame = defaultFrame:FindFirstChild("Wave")
+    if waveFrame then
+        local waveText = waveFrame:FindFirstChild("WaveText")
+        if waveText and waveText:IsA("TextLabel") then
+            wave = waveText.Text
+        end
+    end
+    
+    -- Получаем Time
+    local timeFrame = defaultFrame:FindFirstChild("TimeLeft")
+    if timeFrame then
+        local timeText = timeFrame:FindFirstChild("TimeLeftText")
+        if timeText and timeText:IsA("TextLabel") then
+            time = timeText.Text
+        end
+    end
+
     return wave, time
 end
+
 
 -- Chuyển đổi chuỗi thời gian (vd: "1:23") thành số (vd: 123)
 local function convertTimeToNumber(timeStr)
@@ -141,6 +182,7 @@ local function convertTimeToNumber(timeStr)
     end
     return nil
 end
+
 
 -- THÊM: Lấy tên tower từ hash
 local function GetTowerNameByHash(towerHash)
@@ -153,44 +195,54 @@ local function GetTowerNameByHash(towerHash)
     return nil
 end
 
+
 -- THÊM: Kiểm tra xem tower có phải moving skill tower không
 local function IsMovingSkillTower(towerName, skillIndex)
     if not towerName or not skillIndex then return false end
+
 
     -- Helicopter: skill 1, 3
     if towerName == "Helicopter" and (skillIndex == 1 or skillIndex == 3) then
         return true
     end
 
+
     -- Cryo Helicopter: skill 1, 3  
     if towerName == "Cryo Helicopter" and (skillIndex == 1 or skillIndex == 3) then
         return true
     end
+
 
     -- Jet Trooper: skill 1
     if towerName == "Jet Trooper" and skillIndex == 1 then
         return true
     end
 
+
     return false
 end
+
 
 -- THÊM: Kiểm tra skill có cần position không
 local function IsPositionRequiredSkill(towerName, skillIndex)
     if not towerName or not skillIndex then return false end
+
 
     -- Skill 1: cần position (moving skill)
     if skillIndex == 1 then
         return true
     end
 
+
     -- Skill 3: không cần position (buff/ability skill)
     if skillIndex == 3 then
         return false
     end
 
+
     return true -- mặc định cần position
 end
+
 
 -- Cập nhật file JSON với dữ liệu mới
 local function updateJsonFile()
@@ -209,10 +261,12 @@ local function updateJsonFile()
     safeWriteFile(outJson, finalJson)
 end
 
+
 -- Đọc file JSON hiện có để bảo toàn các "SuperFunction"
 local function preserveSuperFunctions()
     local content = safeReadFile(outJson)
     if content == "" then return end
+
 
     content = content:gsub("^%[%s*", ""):gsub("%s*%]$", "")
     for line in content:gmatch("[^\r\n]+") do
@@ -229,6 +283,7 @@ local function preserveSuperFunctions()
     end
 end
 
+
 -- Phân tích một dòng lệnh macro và trả về một bảng dữ liệu
 local function parseMacroLine(line)
     -- THÊM: Phân tích lệnh skip wave
@@ -239,6 +294,7 @@ local function parseMacroLine(line)
             SkipWhen = convertTimeToNumber(currentTime)
         }}
     end
+
 
     -- THÊM: Phân tích lệnh moving skill WITH position
     local hash, skillIndex, x, y, z = line:match('TDX:useMovingSkill%(([^,]+),%s*([^,]+),%s*Vector3%.new%(([^,]+),%s*([^,]+),%s*([^%)]+)%)%)')
@@ -256,6 +312,7 @@ local function parseMacroLine(line)
         end
     end
 
+
     -- THÊM: Phân tích lệnh skill WITHOUT position (skill 3)
     local hash, skillIndex = line:match('TDX:useSkill%(([^,]+),%s*([^%)]+)%)')
     if hash and skillIndex then
@@ -272,6 +329,7 @@ local function parseMacroLine(line)
         end
     end
 
+
     -- Phân tích lệnh đặt tower
     local a1, name, x, y, z, rot = line:match('TDX:placeTower%(([^,]+),%s*([^,]+),%s*Vector3%.new%(([^,]+),%s*([^,]+),%s*([^%)]+)%)%s*,%s*([^%)]+)%)')
     if a1 and name and x and y and z and rot then
@@ -284,6 +342,7 @@ local function parseMacroLine(line)
             TowerA1 = a1
         }}
     end
+
 
     -- Phân tích lệnh nâng cấp tower
     local hash, path, upgradeCount = line:match('TDX:upgradeTower%(([^,]+),%s*([^,]+),%s*([^%)]+)%)')
@@ -303,21 +362,22 @@ local function parseMacroLine(line)
         end
     end
 
-    -- Phân tích lệnh thay đổi mục tiêu
+
+    -- [ИСПРАВЛЕНО] Phân tích lệnh thay đổi mục tiêu с wave и time
     local hash, targetType = line:match('TDX:changeQueryType%(([^,]+),%s*([^%)]+)%)')
     if hash and targetType then
         local pos = hash2pos[tostring(hash)]
         if pos then
             local currentWave, currentTime = getCurrentWaveAndTime()
-            local entry = {
+            return {{
                 TowerTargetChange = pos.x,
-                TargetWanted = tonumber(targetType),
+                TargetType = tonumber(targetType),
                 TargetWave = currentWave,
-                TargetChangedAt = convertTimeToNumber(currentTime)
-            }
-            return {entry}
+                TargetTime = convertTimeToNumber(currentTime)
+            }}
         end
     end
+
 
     -- Phân tích lệnh bán tower
     local hash = line:match('TDX:sellTower%(([^%)]+)%)')
@@ -328,8 +388,10 @@ local function parseMacroLine(line)
         end
     end
 
+
     return nil
 end
+
 
 -- Xử lý một dòng lệnh, phân tích và ghi vào file JSON
 local function processAndWriteAction(commandString)
@@ -338,11 +400,13 @@ local function processAndWriteAction(commandString)
         -- Phân tích command để lấy axis X
         local axisX = nil
 
+
         -- Kiểm tra nếu là PlaceTower
         local a1, towerName, vec, rot = commandString:match('TDX:placeTower%(([^,]+),%s*([^,]+),%s*Vector3%.new%(([^,]+),%s*([^,]+),%s*([^%)]+)%)%s*,%s*([^%)]+)%)')
         if vec then
             axisX = tonumber(vec)
         end
+
 
         -- Kiểm tra nếu là UpgradeTower
         if not axisX then
@@ -355,6 +419,7 @@ local function processAndWriteAction(commandString)
             end
         end
 
+
         -- Kiểm tra nếu là ChangeQueryType
         if not axisX then
             local hash = commandString:match('TDX:changeQueryType%(([^,]+),')
@@ -365,6 +430,7 @@ local function processAndWriteAction(commandString)
                 end
             end
         end
+
 
         -- Kiểm tra nếu là UseMovingSkill
         if not axisX then
@@ -380,11 +446,13 @@ local function processAndWriteAction(commandString)
             end
         end
 
+
         -- Nếu tower đang được rebuild thì bỏ qua log
         if axisX and globalEnv.TDX_REBUILDING_TOWERS[axisX] then
             return
         end
     end
+
 
     -- Tiếp tục xử lý bình thường nếu không phải rebuild
     local entries = parseMacroLine(commandString)
@@ -396,9 +464,11 @@ local function processAndWriteAction(commandString)
     end
 end
 
+
 --==============================================================================
 --=                      XỬ LÝ SỰ KIỆN & HOOKS                                 =
 --==============================================================================
+
 
 -- Thêm một yêu cầu vào hàng đợi chờ xác nhận
 local function setPending(typeStr, code, hash)
@@ -409,6 +479,7 @@ local function setPending(typeStr, code, hash)
         hash = hash
     })
 end
+
 
 -- Xác nhận một yêu cầu từ hàng đợi và xử lý nó
 local function tryConfirm(typeStr, specificHash)
@@ -424,6 +495,7 @@ local function tryConfirm(typeStr, specificHash)
     end
 end
 
+
 -- Xử lý sự kiện đặt/bán tower
 ReplicatedStorage.Remotes.TowerFactoryQueueUpdated.OnClientEvent:Connect(function(data)
     local d = data and data[1]
@@ -435,20 +507,24 @@ ReplicatedStorage.Remotes.TowerFactoryQueueUpdated.OnClientEvent:Connect(functio
     end
 end)
 
+
 -- Xử lý sự kiện nâng cấp tower
 ReplicatedStorage.Remotes.TowerUpgradeQueueUpdated.OnClientEvent:Connect(function(data)
     if not data or not data[1] then return end
+
 
     local towerData = data[1]
     local hash = towerData.Hash
     local newLevels = towerData.LevelReplicationData
     local currentTime = tick()
 
+
     -- Chống upgrade sinh đôi
     if lastUpgradeTime[hash] and (currentTime - lastUpgradeTime[hash]) < 0.0001 then
         return
     end
     lastUpgradeTime[hash] = currentTime
+
 
     local upgradedPath, upgradeCount = nil, 0
     if lastKnownLevels[hash] then
@@ -463,9 +539,11 @@ ReplicatedStorage.Remotes.TowerUpgradeQueueUpdated.OnClientEvent:Connect(functio
         end
     end
 
+
     if upgradedPath and upgradeCount > 0 then
         local code = string.format("TDX:upgradeTower(%s, %d, %d)", tostring(hash), upgradedPath, upgradeCount)
         processAndWriteAction(code) -- Thay thế việc ghi file txt
+
 
         -- Xóa các yêu cầu nâng cấp đang chờ cho tower này
         for i = #pendingQueue, 1, -1 do
@@ -477,8 +555,10 @@ ReplicatedStorage.Remotes.TowerUpgradeQueueUpdated.OnClientEvent:Connect(functio
         tryConfirm("Upgrade", hash)
     end
 
+
     lastKnownLevels[hash] = newLevels or {}
 end)
+
 
 -- Xử lý sự kiện thay đổi mục tiêu
 ReplicatedStorage.Remotes.TowerQueryTypeIndexChanged.OnClientEvent:Connect(function(data)
@@ -487,10 +567,12 @@ ReplicatedStorage.Remotes.TowerQueryTypeIndexChanged.OnClientEvent:Connect(funct
     end
 end)
 
+
 -- THÊM: Xử lý sự kiện skip wave vote
 ReplicatedStorage.Remotes.SkipWaveVoteCast.OnClientEvent:Connect(function()
     tryConfirm("SkipWave")
 end)
+
 
 -- THÊM: Xử lý sự kiện moving skill được sử dụng
 pcall(function()
@@ -510,6 +592,7 @@ pcall(function()
     end)
 end)
 
+
 -- THÊM: Auto pending cho skip wave với heartbeat connection
 local skipWaveConnection = RunService.Heartbeat:Connect(function()
     -- Auto confirm tất cả skip wave pending sau 0.1 giây
@@ -522,9 +605,11 @@ local skipWaveConnection = RunService.Heartbeat:Connect(function()
     end
 end)
 
+
 -- Xử lý các lệnh gọi remote
 local function handleRemote(name, args)
     -- SỬA: Điều kiện ngăn log được xử lý trong processAndWriteAction
+
 
     -- THÊM: Xử lý SkipWaveVoteCast
     if name == "SkipWaveVoteCast" then
@@ -533,6 +618,7 @@ local function handleRemote(name, args)
         end
     end
 
+
     -- THÊM: Xử lý TowerUseAbilityRequest cho moving skills
     if name == "TowerUseAbilityRequest" then
         local towerHash, skillIndex, targetPos = unpack(args)
@@ -540,6 +626,7 @@ local function handleRemote(name, args)
             local towerName = GetTowerNameByHash(towerHash)
             if IsMovingSkillTower(towerName, skillIndex) then
                 local code
+
 
                 -- Skill cần position (skill 1)
                 if IsPositionRequiredSkill(towerName, skillIndex) and typeof(targetPos) == "Vector3" then
@@ -550,6 +637,7 @@ local function handleRemote(name, args)
                         tostring(targetPos.Y), 
                         tostring(targetPos.Z))
 
+
                 -- Skill không cần position (skill 3)
                 elseif not IsPositionRequiredSkill(towerName, skillIndex) then
                     code = string.format("TDX:useSkill(%s, %d)", 
@@ -557,12 +645,14 @@ local function handleRemote(name, args)
                         skillIndex)
                 end
 
+
                 if code then
                     setPending("MovingSkill", code, towerHash)
                 end
             end
         end
     end
+
 
     if name == "TowerUpgradeRequest" then
         local hash, path, count = unpack(args)
@@ -578,9 +668,13 @@ local function handleRemote(name, args)
     elseif name == "SellTower" then
         setPending("Sell", "TDX:sellTower("..tostring(args[1])..")")
     elseif name == "ChangeQueryType" then
-        setPending("Target", string.format("TDX:changeQueryType(%s, %s)", tostring(args[1]), tostring(args[2])))
+        local towerHash, targetType = unpack(args)
+        if typeof(towerHash) == "number" and typeof(targetType) == "number" then
+            setPending("Target", string.format("TDX:changeQueryType(%s, %s)", tostring(towerHash), tostring(targetType)))
+        end
     end
 end
+
 
 -- Hook các hàm remote
 local function setupHooks()
@@ -589,17 +683,20 @@ local function setupHooks()
         return
     end
 
+
     -- Hook FireServer
     local oldFireServer = hookfunction(Instance.new("RemoteEvent").FireServer, function(self, ...)
         handleRemote(self.Name, {...})
         return oldFireServer(self, ...)
     end)
 
+
     -- Hook InvokeServer - ĐẶC BIỆT QUAN TRỌNG CHO TowerUseAbilityRequest
     local oldInvokeServer = hookfunction(Instance.new("RemoteFunction").InvokeServer, function(self, ...)
         handleRemote(self.Name, {...})
         return oldInvokeServer(self, ...)
     end)
+
 
     -- Hook namecall - QUAN TRỌNG NHẤT CHO ABILITY REQUEST
     local oldNamecall
@@ -613,9 +710,11 @@ local function setupHooks()
     end)
 end
 
+
 --==============================================================================
 --=                         VÒNG LẶP & KHỞI TẠO                               =
 --==============================================================================
+
 
 -- Vòng lặp dọn dẹp hàng đợi chờ
 task.spawn(function()
@@ -629,6 +728,7 @@ task.spawn(function()
         end
     end
 end)
+
 
 -- SỬA: Vòng lặp cập nhật vị trí SpawnCFrame của tower
 task.spawn(function()
@@ -644,6 +744,7 @@ task.spawn(function()
     end
 end)
 
+
 -- Cleanup function để disconnect khi cần thiết
 local function cleanupSkipWaveConnection()
     if skipWaveConnection then
@@ -652,8 +753,10 @@ local function cleanupSkipWaveConnection()
     end
 end
 
+
 -- Lưu cleanup function vào global environment
 getGlobalEnv().TDX_CLEANUP_SKIP_WAVE = cleanupSkipWaveConnection
+
 
 -- Khởi tạo
 preserveSuperFunctions()
