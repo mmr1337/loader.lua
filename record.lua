@@ -286,14 +286,16 @@ local function parseMacroLine(line)
         end
     end
 
-    local hash, wave, time = line:match('TDX:sellTower%(([^,]+),%s*"([^"]+)",%s*([^%)]+)%)')
-    if hash and wave and time then
+    -- ИСПРАВЛЕНО: Сначала пробуем формат ТОЛЬКО с hash (как приходит из handleRemote)
+    local hash = line:match('TDX:sellTower%(([^%)]+)%)')
+    if hash then
         local pos = hash2pos[tostring(hash)]
         if pos then
+            local currentWave, currentTime = getCurrentWaveAndTime()
             return {{ 
                 SellTower = pos.x,
-                SellWave = wave,
-                SellTime = tonumber(time)
+                SellWave = currentWave,
+                SellTime = convertTimeToNumber(currentTime)
             }}
         end
     end
@@ -322,7 +324,7 @@ local function processAndWriteAction(commandString)
                 hash = commandString:match('TDX:useSkill%(([^,]+),')
             end
             if not hash then
-                hash = commandString:match('TDX:sellTower%(([^,]+),')
+                hash = commandString:match('TDX:sellTower%(([^,]+)')
             end
             if hash then
                 local pos = hash2pos[tostring(hash)]
@@ -372,48 +374,13 @@ local function tryConfirm(typeStr, specificHash)
     end
 end
 
-local lastTowerCount = 0
-local soldTowerData = {}
-
-task.spawn(function()
-    while task.wait(0.05) do
-        if TowerClass and TowerClass.GetTowers then
-            local currentTowers = TowerClass.GetTowers()
-            local currentCount = 0
-            local currentHashes = {}
-            
-            for hash, tower in pairs(currentTowers) do
-                currentCount = currentCount + 1
-                currentHashes[tostring(hash)] = true
-            end
-            
-            if currentCount < lastTowerCount then
-                for hashStr, posData in pairs(hash2pos) do
-                    if not currentHashes[hashStr] and not soldTowerData[hashStr] then
-                        local currentWave, currentTime = getCurrentWaveAndTime()
-                        local code = string.format('TDX:sellTower(%s, "%s", %s)', 
-                            hashStr,
-                            tostring(currentWave or "Unknown"),
-                            tostring(convertTimeToNumber(currentTime) or 0))
-                        
-                        soldTowerData[hashStr] = true
-                        processAndWriteAction(code)
-                        hash2pos[hashStr] = nil
-                        break
-                    end
-                end
-            end
-            
-            lastTowerCount = currentCount
-        end
-    end
-end)
-
 ReplicatedStorage.Remotes.TowerFactoryQueueUpdated.OnClientEvent:Connect(function(data)
     local d = data and data[1]
     if not d then return end
     if d.Creation then
         tryConfirm("Place")
+    else
+        tryConfirm("Sell")
     end
 end)
 
@@ -538,6 +505,9 @@ local function handleRemote(name, args)
             local code = string.format('TDX:placeTower(%s, "%s", Vector3.new(%s, %s, %s), %s)', tostring(a1), towerName, tostring(vec.X), tostring(vec.Y), tostring(vec.Z), tostring(rot))
             setPending("Place", code)
         end
+    elseif name == "SellTower" then
+        -- ИСПРАВЛЕНО: Только hash, как в твоём example!
+        setPending("Sell", "TDX:sellTower("..tostring(args[1])..")")
     elseif name == "ChangeQueryType" then
         local towerHash, targetType = unpack(args)
         if typeof(towerHash) == "number" and typeof(targetType) == "number" then
