@@ -10,7 +10,7 @@ local outJson = "tdx/macros/recorder_output.json"
 if isfile and isfile(outJson) and delfile then
     local ok, err = pcall(delfile, outJson)
     if not ok then
-        warn("Không thể xóa file cũ: " .. tostring(err))
+        warn("karamba: " .. tostring(err))
     end
 end
 
@@ -18,7 +18,7 @@ local recordedActions = {}
 local hash2pos = {}
 
 local pendingQueue = {}
-local timeout = 2
+local timeout = 5
 local lastKnownLevels = {}
 local lastUpgradeTime = {}
 
@@ -52,6 +52,8 @@ local function safeWriteFile(path, content)
         local success, err = pcall(writefile, path, content)
         if not success then
             warn("Lỗi khi ghi file: " .. tostring(err))
+        else
+            print("✅ Đã ghi file: " .. path)
         end
     end
 end
@@ -175,13 +177,12 @@ local function updateJsonFile()
     for i, entry in ipairs(recordedActions) do
         local ok, jsonStr = pcall(HttpService.JSONEncode, HttpService, entry)
         if ok then
-            if i < #recordedActions then
-                jsonStr = jsonStr .. ","
-            end
             table.insert(jsonLines, jsonStr)
+        else
+            warn("⚠️ Không thể encode entry #" .. i)
         end
     end
-    local finalJson = "[\n" .. table.concat(jsonLines, "\n") .. "\n]"
+    local finalJson = "[\n" .. table.concat(jsonLines, ",\n") .. "\n]"
     safeWriteFile(outJson, finalJson)
 end
 
@@ -243,9 +244,8 @@ local function parseMacroLine(line)
         end
     end
 
-    local a1, name, x, y, z, rot = line:match('TDX:placeTower%(([^,]+),%s*([^,]+),%s*Vector3%.new%(([^,]+),%s*([^,]+),%s*([^%)]+)%)%s*,%s*([^%)]+)%)')
+    local a1, name, x, y, z, rot = line:match('TDX:placeTower%(([^,]+),%s*"([^"]+)",%s*Vector3%.new%(([^,]+),%s*([^,]+),%s*([^%)]+)%),%s*([^%)]+)%)')
     if a1 and name and x and y and z and rot then
-        name = tostring(name):gsub('^%s*"(.-)"%s*$', '%1')
         return {{
             TowerPlaceCost = GetTowerPlaceCostByName(name),
             TowerPlaced = name,
@@ -286,7 +286,6 @@ local function parseMacroLine(line)
         end
     end
 
-    -- [НОВОЕ] SellTower с wave и time
     local hash, wave, time = line:match('TDX:sellTower%(([^,]+),%s*"([^"]+)",%s*([^%)]+)%)')
     if hash and wave and time then
         local pos = hash2pos[tostring(hash)]
@@ -306,40 +305,25 @@ local function processAndWriteAction(commandString)
     if globalEnv.TDX_REBUILDING_TOWERS then
         local axisX = nil
 
-        local a1, towerName, vec, rot = commandString:match('TDX:placeTower%(([^,]+),%s*([^,]+),%s*Vector3%.new%(([^,]+),%s*([^,]+),%s*([^%)]+)%)%s*,%s*([^%)]+)%)')
-        if vec then
-            axisX = tonumber(vec)
+        local vecMatch = commandString:match('Vector3%.new%(([^,]+),')
+        if vecMatch then
+            axisX = tonumber(vecMatch)
         end
 
         if not axisX then
             local hash = commandString:match('TDX:upgradeTower%(([^,]+),')
-            if hash then
-                local pos = hash2pos[tostring(hash)]
-                if pos then axisX = pos.x end
+            if not hash then
+                hash = commandString:match('TDX:changeQueryType%(([^,]+),')
             end
-        end
-
-        if not axisX then
-            local hash = commandString:match('TDX:changeQueryType%(([^,]+),')
-            if hash then
-                local pos = hash2pos[tostring(hash)]
-                if pos then axisX = pos.x end
+            if not hash then
+                hash = commandString:match('TDX:useMovingSkill%(([^,]+),')
             end
-        end
-
-        if not axisX then
-            local hash = commandString:match('TDX:useMovingSkill%(([^,]+),')
             if not hash then
                 hash = commandString:match('TDX:useSkill%(([^,]+),')
             end
-            if hash then
-                local pos = hash2pos[tostring(hash)]
-                if pos then axisX = pos.x end
+            if not hash then
+                hash = commandString:match('TDX:sellTower%(([^,]+),')
             end
-        end
-
-        if not axisX then
-            local hash = commandString:match('TDX:sellTower%(([^,]+),')
             if hash then
                 local pos = hash2pos[tostring(hash)]
                 if pos then axisX = pos.x end
@@ -355,6 +339,7 @@ local function processAndWriteAction(commandString)
     if entries then
         for _, entry in ipairs(entries) do
             table.insert(recordedActions, entry)
+            print("📝 Записано: " .. commandString:sub(1, 50))
         end
         updateJsonFile()
     end
@@ -371,6 +356,7 @@ local function setPending(typeStr, code, hash)
         created = tick(),
         hash = hash
     })
+    print("⏳ Pending: " .. typeStr .. " | " .. code:sub(1, 50))
 end
 
 local function tryConfirm(typeStr, specificHash)
@@ -386,12 +372,11 @@ local function tryConfirm(typeStr, specificHash)
     end
 end
 
--- [НОВОЕ] Детектор продажи башен через мониторинг TowerClass
 local lastTowerCount = 0
 local soldTowerData = {}
 
 task.spawn(function()
-    while task.wait(0.1) do
+    while task.wait(0.05) do
         if TowerClass and TowerClass.GetTowers then
             local currentTowers = TowerClass.GetTowers()
             local currentCount = 0
@@ -413,8 +398,6 @@ task.spawn(function()
                         
                         soldTowerData[hashStr] = true
                         processAndWriteAction(code)
-                        
-                        -- Очищаем hash2pos для проданной башни
                         hash2pos[hashStr] = nil
                         break
                     end
@@ -432,7 +415,6 @@ ReplicatedStorage.Remotes.TowerFactoryQueueUpdated.OnClientEvent:Connect(functio
     if d.Creation then
         tryConfirm("Place")
     end
-    -- Sell confirmation удален, используем детектор выше
 end)
 
 ReplicatedStorage.Remotes.TowerUpgradeQueueUpdated.OnClientEvent:Connect(function(data)
@@ -556,7 +538,6 @@ local function handleRemote(name, args)
             local code = string.format('TDX:placeTower(%s, "%s", Vector3.new(%s, %s, %s), %s)', tostring(a1), towerName, tostring(vec.X), tostring(vec.Y), tostring(vec.Z), tostring(rot))
             setPending("Place", code)
         end
-    -- SellTower удален из handleRemote, используется детектор
     elseif name == "ChangeQueryType" then
         local towerHash, targetType = unpack(args)
         if typeof(towerHash) == "number" and typeof(targetType) == "number" then
@@ -567,17 +548,21 @@ end
 
 local function setupHooks()
     if not hookfunction or not hookmetamethod or not checkcaller then
-        warn("Executor không hỗ trợ đầy đủ các hàm hook cần thiết.")
+        warn("⚠️ Executor không hỗ trợ đầy đủ các hàm hook cần thiết.")
         return
     end
 
     local oldFireServer = hookfunction(Instance.new("RemoteEvent").FireServer, function(self, ...)
-        handleRemote(self.Name, {...})
+        if not checkcaller() then
+            handleRemote(self.Name, {...})
+        end
         return oldFireServer(self, ...)
     end)
 
     local oldInvokeServer = hookfunction(Instance.new("RemoteFunction").InvokeServer, function(self, ...)
-        handleRemote(self.Name, {...})
+        if not checkcaller() then
+            handleRemote(self.Name, {...})
+        end
         return oldInvokeServer(self, ...)
     end)
 
@@ -590,6 +575,8 @@ local function setupHooks()
         end
         return oldNamecall(self, ...)
     end)
+    
+    print("✅ Hooks установлены успешно")
 end
 
 --==============================================================================
@@ -601,7 +588,7 @@ task.spawn(function()
         local now = tick()
         for i = #pendingQueue, 1, -1 do
             if now - pendingQueue[i].created > timeout then
-                warn("❌ Không xác thực được: " .. pendingQueue[i].type .. " | Code: " .. pendingQueue[i].code)
+                warn("❌ Timeout: " .. pendingQueue[i].type .. " | Code: " .. pendingQueue[i].code:sub(1, 50))
                 table.remove(pendingQueue, i)
             end
         end
@@ -609,7 +596,7 @@ task.spawn(function()
 end)
 
 task.spawn(function()
-    while task.wait() do
+    while task.wait(0.1) do
         if TowerClass and TowerClass.GetTowers then
             for hash, tower in pairs(TowerClass.GetTowers()) do
                 local pos = GetTowerSpawnPosition(tower)
@@ -632,3 +619,6 @@ getGlobalEnv().TDX_CLEANUP_SKIP_WAVE = cleanupSkipWaveConnection
 
 preserveSuperFunctions()
 setupHooks()
+
+print("🎬 Macro Recorder запущен! Файл: " .. outJson)
+print("📊 Всего записей: " .. #recordedActions)
