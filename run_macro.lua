@@ -1,3 +1,4 @@
+
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -9,9 +10,9 @@ local PlayerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
 
 local function setThreadIdentity(identity)
     if setthreadidentity then
-        pcall(setthreadidentity, identity)
+        setthreadidentity(identity)
     elseif syn and syn.set_thread_identity then
-        pcall(syn.set_thread_identity, identity)
+        syn.set_thread_identity(identity)
     end
 end
 
@@ -54,17 +55,6 @@ local function safeIsFile(path)
     return false
 end
 
-local function validateJSON(content)
-    if content:match("\\\\n") then
-        warn("⚠️ JSON содержит двойные слеши, исправляю...")
-        content = content:gsub("\\\\n", "\n")
-    end
-    if content:match("\\\\r") then
-        content = content:gsub("\\\\r", "\r")
-    end
-    return content
-end
-
 local defaultConfig = {
     ["Macro Name"] = "endless",
     ["PlaceMode"] = "Rewrite",
@@ -73,9 +63,9 @@ local defaultConfig = {
     ["SellAllDelay"] = 0.1,
     ["PriorityRebuildOrder"] = {"EDJ", "Medic", "Commander", "Mobster", "Golden Mobster", "Combat Drone"},
     ["TargetChangeCheckDelay"] = 0.05,
-    ["RebuildPriority"] = true,
+    ["RebuildPriority"] = false,
     ["RebuildCheckInterval"] = 0,
-    ["MacroStepDelay"] = 0.15,
+    ["MacroStepDelay"] = 0.1,
     ["MaxConcurrentRebuilds"] = 120,
     ["MonitorCheckDelay"] = 0.05,
     ["AllowParallelTargets"] = false,
@@ -146,7 +136,7 @@ local function GetTowerByAxis(targetX)
     for hash, tower in pairs(TowerClass.GetTowers()) do
         local spawnCFrame = tower.SpawnCFrame
         if spawnCFrame and typeof(spawnCFrame) == "CFrame" then
-            if math.abs(spawnCFrame.Position.X - targetX) < 0.01 then
+            if spawnCFrame.Position.X == targetX then
                 return hash, tower
             end
         end
@@ -174,16 +164,13 @@ local function getGameUI()
         if interface and interface.Parent then
             local gameInfoBar = interface:FindFirstChild("GameInfoBar")
             if gameInfoBar and gameInfoBar.Parent then
-                local default = gameInfoBar:FindFirstChild("Default")
-                if default and default.Parent then
-                    local waveFrame = default:FindFirstChild("Wave")
-                    local timeFrame = default:FindFirstChild("TimeLeft")
-                    if waveFrame and timeFrame and waveFrame.Parent and timeFrame.Parent then
-                        local waveText = waveFrame:FindFirstChild("WaveText")
-                        local timeText = timeFrame:FindFirstChild("TimeLeftText")
-                        if waveText and timeText and waveText.Parent and timeText.Parent then
-                            return { waveText = waveText, timeText = timeText }
-                        end
+                local waveFrame = gameInfoBar:FindFirstChild("Wave")
+                local timeFrame = gameInfoBar:FindFirstChild("TimeLeft")
+                if waveFrame and timeFrame and waveFrame.Parent and timeFrame.Parent then
+                    local waveText = waveFrame:FindFirstChild("WaveText")
+                    local timeText = timeFrame:FindFirstChild("TimeLeftText")
+                    if waveText and timeText and waveText.Parent and timeText.Parent then
+                        return { waveText = waveText, timeText = timeText }
                     end
                 end
             end
@@ -274,37 +261,25 @@ end
 
 local function PlaceTowerRetry(args, axisValue)
     for i = 1, getMaxAttempts() do
-        print("🏗️ Попытка размещения башни #" .. i .. " на X=" .. axisValue)
         if globalEnv.TDX_Config.UseThreadedRemotes then
             SafeRemoteCall("InvokeServer", Remotes.PlaceTower, unpack(args))
         else
             pcall(function() Remotes.PlaceTower:InvokeServer(unpack(args)) end)
         end
         task.wait(globalEnv.TDX_Config.MacroStepDelay)
-        local hash, tower = WaitForTowerInitialization(axisValue, 3)
-        if tower then 
-            print("✅ Башня установлена на X=" .. axisValue)
-            return true 
-        end
+        local _, tower = WaitForTowerInitialization(axisValue, 3)
+        if tower then return true end
     end
-    warn("❌ Не удалось установить башню на X=" .. axisValue)
     return false
 end
 
 local function UpgradeTowerRetry(axisValue, path)
     for i = 1, getMaxAttempts() do
-        local hash, tower = WaitForTowerInitialization(axisValue, 3)
-        if not hash then 
-            warn("⚠️ Башня не найдена на X=" .. axisValue)
-            task.wait(globalEnv.TDX_Config.MacroStepDelay)
-            continue 
-        end
+        local hash, tower = WaitForTowerInitialization(axisValue)
+        if not hash then task.wait(globalEnv.TDX_Config.MacroStepDelay); continue end
         local before = tower.LevelHandler:GetLevelOnPath(path)
         local cost = GetCurrentUpgradeCost(tower, path)
-        if not cost then 
-            print("✅ Башня на X=" .. axisValue .. " уже максимально улучшена")
-            return true 
-        end
+        if not cost then return true end
         WaitForCash(cost)
 
         if globalEnv.TDX_Config.UseThreadedRemotes then
@@ -318,13 +293,9 @@ local function UpgradeTowerRetry(axisValue, path)
         repeat
             RunService.RenderStepped:Wait()
             local _, t = GetTowerByAxis(axisValue)
-            if t and t.LevelHandler and t.LevelHandler:GetLevelOnPath(path) > before then 
-                print("✅ Башня улучшена на X=" .. axisValue .. " путь " .. path)
-                return true 
-            end
+            if t and t.LevelHandler and t.LevelHandler:GetLevelOnPath(path) > before then return true end
         until tick() - startTime > 3
     end
-    warn("❌ Не удалось улучшить башню на X=" .. axisValue)
     return false
 end
 
@@ -338,12 +309,10 @@ local function ChangeTargetRetry(axisValue, targetType)
                 pcall(function() Remotes.ChangeQueryType:FireServer(hash, targetType) end)
             end
             task.wait(globalEnv.TDX_Config.MacroStepDelay)
-            print("✅ Цель изменена для X=" .. axisValue .. " на тип " .. targetType)
             return true
         end
         task.wait(globalEnv.TDX_Config.MacroStepDelay)
     end
-    warn("❌ Не удалось изменить цель для X=" .. axisValue)
     return false
 end
 
@@ -354,7 +323,6 @@ local function SkipWaveRetry()
         pcall(function() Remotes.SkipWaveVoteCast:FireServer(true) end)
     end
     task.wait(globalEnv.TDX_Config.MacroStepDelay)
-    print("⏭️ Skip wave выполнен")
     return true
 end
 
@@ -364,15 +332,12 @@ local function UseMovingSkillRetry(axisValue, skillIndex, location)
     local useFireServer = TowerUseAbilityRequest:IsA("RemoteEvent")
 
     for i = 1, getMaxAttempts() do
-        local hash, tower = WaitForTowerInitialization(axisValue, 3)
+        local hash, tower = WaitForTowerInitialization(axisValue)
         if hash and tower and tower.AbilityHandler then
             local ability = tower.AbilityHandler:GetAbilityFromIndex(skillIndex)
             if ability then
                 local cooldown = ability.CooldownRemaining or 0
-                if cooldown > 0 then 
-                    print("⏳ Ожидание кулдауна способности: " .. cooldown .. "s")
-                    task.wait(cooldown + 0.1) 
-                end
+                if cooldown > 0 then task.wait(cooldown + 0.1) end
 
                 local success = false
                 if globalEnv.TDX_Config.UseThreadedRemotes then
@@ -415,14 +380,12 @@ local function UseMovingSkillRetry(axisValue, skillIndex, location)
 
                 if success then 
                     task.wait(globalEnv.TDX_Config.MacroStepDelay)
-                    print("✅ Способность использована для X=" .. axisValue)
                     return true 
                 end
             end
         end
         task.wait(globalEnv.TDX_Config.MacroStepDelay)
     end
-    warn("❌ Не удалось использовать способность для X=" .. axisValue)
     return false
 end
 
@@ -436,14 +399,10 @@ local function SellTowerRetry(axisValue)
                 pcall(function() Remotes.SellTower:FireServer(hash) end)
             end
             task.wait(globalEnv.TDX_Config.MacroStepDelay)
-            if not GetTowerByAxis(axisValue) then 
-                print("✅ Башня продана на X=" .. axisValue)
-                return true 
-            end
+            if not GetTowerByAxis(axisValue) then return true end
         end
         task.wait(globalEnv.TDX_Config.MacroStepDelay)
     end
-    warn("❌ Не удалось продать башню на X=" .. axisValue)
     return false
 end
 
@@ -465,8 +424,6 @@ local function StartUnifiedMonitor(monitorEntries, gameUI)
             if entry.TargetWave and entry.TargetWave ~= currentWave then return false end
             if entry.TargetChangedAt then
                 if currentTime ~= convertToTimeFormat(entry.TargetChangedAt) then return false end
-            elseif entry.TargetTime then
-                if currentTime ~= convertToTimeFormat(entry.TargetTime) then return false end
             end
             return true
         end
@@ -475,11 +432,6 @@ local function StartUnifiedMonitor(monitorEntries, gameUI)
             if entry.time then
                 if currentTime ~= convertToTimeFormat(entry.time) then return false end
             end
-            return true
-        end
-        if entry.SellTower and entry.SellWave and entry.SellTime then
-            if entry.SellWave ~= currentWave then return false end
-            if currentTime ~= convertToTimeFormat(entry.SellTime) then return false end
             return true
         end
         return false
@@ -496,26 +448,21 @@ local function StartUnifiedMonitor(monitorEntries, gameUI)
             return true
         end
         if entry.TowerTargetChange then
-            local targetType = entry.TargetWanted or entry.TargetType
             if globalEnv.TDX_Config.AllowParallelTargets then 
-                task.spawn(function() ChangeTargetRetry(entry.TowerTargetChange, targetType) end) 
+                task.spawn(function() ChangeTargetRetry(entry.TowerTargetChange, entry.TargetWanted) end) 
             else 
-                return ChangeTargetRetry(entry.TowerTargetChange, targetType) 
+                return ChangeTargetRetry(entry.TowerTargetChange, entry.TargetWanted) 
             end
             return true
         end
         if entry.towermoving then
             return UseMovingSkillRetry(entry.towermoving, entry.skillindex, entry.location)
         end
-        if entry.SellTower and entry.SellWave and entry.SellTime then
-            return SellTowerRetry(entry.SellTower)
-        end
         return false
     end
 
     task.spawn(function()
         setThreadIdentity(2)
-        print("👁️ Монитор событий запущен")
         while true do
             local success, currentWave, currentTime = pcall(function() return gameUI.waveText.Text, gameUI.timeText.Text end)
             if success then
@@ -532,9 +479,9 @@ local function StartUnifiedMonitor(monitorEntries, gameUI)
     end)
 end
 
-local function StartRebuildSystem(rebuildEntry, towerRecords, skipTypesMap, soldPositions)
+local function StartRebuildSystem(rebuildEntry, towerRecords, skipTypesMap)
     local config = globalEnv.TDX_Config
-    local rebuildAttempts, jobQueue, activeJobs = {}, {}, {}
+    local rebuildAttempts, soldPositions, jobQueue, activeJobs = {}, {}, {}, {}
 
     local function RebuildWorker()
         task.spawn(function()
@@ -590,8 +537,7 @@ local function StartRebuildSystem(rebuildEntry, towerRecords, skipTypesMap, sold
 
                     if rebuildSuccess then
                         for _, record in ipairs(targetRecords) do
-                            local targetType = record.entry.TargetWanted or record.entry.TargetType
-                            ChangeTargetRetry(tonumber(record.entry.TowerTargetChange), targetType)
+                            ChangeTargetRetry(tonumber(record.entry.TowerTargetChange), record.entry.TargetWanted)
                         end
                     end
 
@@ -606,7 +552,6 @@ local function StartRebuildSystem(rebuildEntry, towerRecords, skipTypesMap, sold
     for i = 1, config.MaxConcurrentRebuilds do RebuildWorker() end
 
     task.spawn(function()
-        print("🔧 Rebuild система запущена")
         while true do
             local existingTowersCache = {}
             for hash, tower in pairs(TowerClass.GetTowers()) do
@@ -670,53 +615,41 @@ local function RunMacroRunner()
     local macroName = config["Macro Name"] or "event"
     local macroPath = "tdx/macros/" .. macroName .. ".json"
 
-    print("🔍 Поиск макроса: " .. macroPath)
-
     if not safeIsFile(macroPath) then 
-        error("❌ Не найден файл макроса: " .. macroPath) 
+        error("Không tìm thấy file macro: " .. macroPath) 
     end
 
     local macroContent = safeReadFile(macroPath)
     if not macroContent then 
-        error("❌ Не удалось прочитать файл макроса") 
+        error("Không thể đọc file macro") 
     end
-
-    macroContent = validateJSON(macroContent)
 
     local ok, macro = pcall(function() return HttpService:JSONDecode(macroContent) end)
-    if not ok then 
-        error("❌ Ошибка парсинга JSON: " .. tostring(macro)) 
-    end
-    
-    if type(macro) ~= "table" then 
-        error("❌ Макрос не является таблицей") 
+    if not ok or type(macro) ~= "table" then 
+        error("Lỗi parse macro file") 
     end
 
-    print("✅ Макрос загружен, всего записей: " .. #macro)
-
-    local gameUI, towerRecords, skipTypesMap, monitorEntries, soldPositions, rebuildSystemActive = getGameUI(), {}, {}, {}, {}, false
+    local gameUI, towerRecords, skipTypesMap, monitorEntries, rebuildSystemActive = getGameUI(), {}, {}, {}, false
 
     for i, entry in ipairs(macro) do
-        if entry.TowerTargetChange or entry.towermoving or entry.SkipWave or (entry.SellTower and entry.SellWave and entry.SellTime) then 
+        if entry.TowerTargetChange or entry.towermoving or entry.SkipWave then 
             table.insert(monitorEntries, entry) 
         end
     end
 
     if #monitorEntries > 0 then 
-        print("📊 Найдено событий для мониторинга: " .. #monitorEntries)
         StartUnifiedMonitor(monitorEntries, gameUI) 
     end
 
     for i, entry in ipairs(macro) do
         if entry.SuperFunction == "sell_all" then 
-            print("💰 Продажа всех башен (кроме пропущенных)")
             SellAllTowers(entry.Skip)
         elseif entry.SuperFunction == "rebuild" then
             if not rebuildSystemActive then
                 for _, skip in ipairs(entry.Skip or {}) do 
                     skipTypesMap[skip] = { beOnly = entry.Be == true, fromLine = i } 
                 end
-                StartRebuildSystem(entry, towerRecords, skipTypesMap, soldPositions)
+                StartRebuildSystem(entry, towerRecords, skipTypesMap)
                 rebuildSystemActive = true
             end
         elseif entry.TowerPlaced and entry.TowerVector and entry.TowerPlaceCost then
@@ -734,29 +667,17 @@ local function RunMacroRunner()
             end
         elseif entry.TowerUpgraded and entry.UpgradePath then
             local axis = tonumber(entry.TowerUpgraded)
-            local hash, tower = WaitForTowerInitialization(axis, 3)
-            if hash and tower then
-                UpgradeTowerRetry(axis, entry.UpgradePath)
-                towerRecords[axis] = towerRecords[axis] or {}
-                table.insert(towerRecords[axis], { line = i, entry = entry })
-            else
-                warn("⚠️ Башня не найдена для апгрейда на X=" .. axis .. " (строка " .. i .. ")")
-            end
-        elseif entry.TowerTargetChange then
-            local targetType = entry.TargetWanted or entry.TargetType
-            if targetType then
-                local axis = tonumber(entry.TowerTargetChange)
-                towerRecords[axis] = towerRecords[axis] or {}
-                table.insert(towerRecords[axis], { line = i, entry = entry })
-            end
-        elseif entry.SellTower and entry.SellWave and entry.SellTime then
-            local axis = tonumber(entry.SellTower)
-            soldPositions[axis] = true
-        elseif entry.SellTower and not entry.SellWave then
+            UpgradeTowerRetry(axis, entry.UpgradePath)
+            towerRecords[axis] = towerRecords[axis] or {}
+            table.insert(towerRecords[axis], { line = i, entry = entry })
+        elseif entry.TowerTargetChange and entry.TargetWanted then
+            local axis = tonumber(entry.TowerTargetChange)
+            towerRecords[axis] = towerRecords[axis] or {}
+            table.insert(towerRecords[axis], { line = i, entry = entry })
+        elseif entry.SellTower then
             local axis = tonumber(entry.SellTower)
             SellTowerRetry(axis)
             towerRecords[axis] = nil
-            soldPositions[axis] = true
         elseif entry.towermoving and entry.skillindex and entry.location then
             local axis = entry.towermoving
             towerRecords[axis] = towerRecords[axis] or {}
@@ -765,11 +686,6 @@ local function RunMacroRunner()
 
         task.wait(globalEnv.TDX_Config.MacroStepDelay)
     end
-    
-    print("✅ Основной макрос выполнен")
 end
 
-local success, err = pcall(RunMacroRunner)
-if not success then
-    error("❌ Ошибка выполнения макроса: " .. tostring(err))
-end
+pcall(RunMacroRunner)
