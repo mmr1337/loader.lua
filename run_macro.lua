@@ -156,7 +156,6 @@ local function WaitForTowerInitialization(axisX, timeout)
     return nil, nil
 end
 
--- [ИСПРАВЛЕНО] Получение Game UI с правильной структурой
 local function getGameUI()
     local attempts = 0
     while attempts < 30 do
@@ -164,7 +163,6 @@ local function getGameUI()
         if interface and interface.Parent then
             local gameInfoBar = interface:FindFirstChild("GameInfoBar")
             if gameInfoBar and gameInfoBar.Parent then
-                -- ИСПРАВЛЕНО: Добавлен пропущенный уровень "Default"
                 local default = gameInfoBar:FindFirstChild("Default")
                 if default and default.Parent then
                     local waveFrame = default:FindFirstChild("Wave")
@@ -303,7 +301,6 @@ local function UpgradeTowerRetry(axisValue, path)
     return false
 end
 
--- [ИСПРАВЛЕНО] Обновлена функция ChangeTargetRetry с правильным ключом
 local function ChangeTargetRetry(axisValue, targetType)
     for i = 1, getMaxAttempts() do
         local hash = GetTowerByAxis(axisValue)
@@ -411,7 +408,6 @@ local function SellTowerRetry(axisValue)
     return false
 end
 
--- [ИСПРАВЛЕНО] Обновлена функция StartUnifiedMonitor с поддержкой обоих ключей JSON
 local function StartUnifiedMonitor(monitorEntries, gameUI)
     local processedEntries = {}
     local attemptedSkipWaves = {}
@@ -428,11 +424,8 @@ local function StartUnifiedMonitor(monitorEntries, gameUI)
         end
         if entry.TowerTargetChange then
             if entry.TargetWave and entry.TargetWave ~= currentWave then return false end
-            -- ИСПРАВЛЕНО: Поддержка обоих форматов времени
             if entry.TargetChangedAt then
                 if currentTime ~= convertToTimeFormat(entry.TargetChangedAt) then return false end
-            elseif entry.TargetTime then
-                if currentTime ~= convertToTimeFormat(entry.TargetTime) then return false end
             end
             return true
         end
@@ -457,12 +450,10 @@ local function StartUnifiedMonitor(monitorEntries, gameUI)
             return true
         end
         if entry.TowerTargetChange then
-            -- ИСПРАВЛЕНО: Поддержка обоих ключей TargetWanted и TargetType
-            local targetType = entry.TargetWanted or entry.TargetType
             if globalEnv.TDX_Config.AllowParallelTargets then 
-                task.spawn(function() ChangeTargetRetry(entry.TowerTargetChange, targetType) end) 
+                task.spawn(function() ChangeTargetRetry(entry.TowerTargetChange, entry.TargetWanted) end) 
             else 
-                return ChangeTargetRetry(entry.TowerTargetChange, targetType) 
+                return ChangeTargetRetry(entry.TowerTargetChange, entry.TargetWanted) 
             end
             return true
         end
@@ -548,9 +539,7 @@ local function StartRebuildSystem(rebuildEntry, towerRecords, skipTypesMap)
 
                     if rebuildSuccess then
                         for _, record in ipairs(targetRecords) do
-                            -- ИСПРАВЛЕНО: Поддержка обоих ключей
-                            local targetType = record.entry.TargetWanted or record.entry.TargetType
-                            ChangeTargetRetry(tonumber(record.entry.TowerTargetChange), targetType)
+                            ChangeTargetRetry(tonumber(record.entry.TowerTargetChange), record.entry.TargetWanted)
                         end
                     end
 
@@ -683,14 +672,10 @@ local function RunMacroRunner()
             UpgradeTowerRetry(axis, entry.UpgradePath)
             towerRecords[axis] = towerRecords[axis] or {}
             table.insert(towerRecords[axis], { line = i, entry = entry })
-        elseif entry.TowerTargetChange then
-            -- ИСПРАВЛЕНО: Поддержка обоих ключей
-            local targetType = entry.TargetWanted or entry.TargetType
-            if targetType then
-                local axis = tonumber(entry.TowerTargetChange)
-                towerRecords[axis] = towerRecords[axis] or {}
-                table.insert(towerRecords[axis], { line = i, entry = entry })
-            end
+        elseif entry.TowerTargetChange and entry.TargetWanted then
+            local axis = tonumber(entry.TowerTargetChange)
+            towerRecords[axis] = towerRecords[axis] or {}
+            table.insert(towerRecords[axis], { line = i, entry = entry })
         elseif entry.SellTower then
             local axis = tonumber(entry.SellTower)
             SellTowerRetry(axis)
@@ -706,4 +691,3 @@ local function RunMacroRunner()
 end
 
 pcall(RunMacroRunner)
-
