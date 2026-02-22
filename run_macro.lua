@@ -7,23 +7,38 @@ local cashStat = player:WaitForChild("leaderstats"):WaitForChild("Cash")
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 local PlayerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
 
-local LHU_Cache = nil
-local function GetLHU()
-    if LHU_Cache then return LHU_Cache end
-    pcall(function()
-        LHU_Cache = require(ReplicatedStorage:WaitForChild("TDX_Shared"):WaitForChild("Common"):WaitForChild("LevelHandlerUtilities"))
+local LevelHandlerUtilitiesCache = nil
+local function GetLevelHandlerUtilities()
+    if LevelHandlerUtilitiesCache then return LevelHandlerUtilitiesCache end
+    local success, result = pcall(function()
+        return require(ReplicatedStorage:WaitForChild("TDX_Shared"):WaitForChild("Common"):WaitForChild("LevelHandlerUtilities"))
     end)
-    return LHU_Cache
+    if success and result then
+        LevelHandlerUtilitiesCache = result
+    end
+    return LevelHandlerUtilitiesCache
 end
-
-local towerAxisCache = {}
-local lastCacheTime = 0
 
 local function setThreadIdentity(identity)
     if setthreadidentity then
         setthreadidentity(identity)
     elseif syn and syn.set_thread_identity then
         syn.set_thread_identity(identity)
+    end
+end
+
+local function SafeRemoteCall(remoteType, remote, ...)
+    local args = {...}
+    setThreadIdentity(2)
+    if remoteType == "FireServer" then
+        pcall(function()
+            remote:FireServer(unpack(args))
+        end)
+    elseif remoteType == "InvokeServer" then
+        local success, result = pcall(function()
+            return remote:InvokeServer(unpack(args))
+        end)
+        return success and result or nil
     end
 end
 
@@ -76,6 +91,13 @@ for key, value in pairs(defaultConfig) do
     end
 end
 
+local function getMaxAttempts()
+    local placeMode = globalEnv.TDX_Config.PlaceMode or "Ashed"
+    if placeMode == "Ashed" then return 1 end
+    if placeMode == "Rewrite" then return 10 end
+    return 1
+end
+
 local function SafeRequire(path, timeout)
     timeout = timeout or 5
     local startTime = tick()
@@ -104,41 +126,6 @@ if not TowerClass then
     error("Cannot load TowerClass")
 end
 
-local function RefreshTowerCache()
-    local now = tick()
-    if now - lastCacheTime < 0.3 then return end
-    towerAxisCache = {}
-    for hash, tower in pairs(TowerClass.GetTowers()) do
-        if tower.SpawnCFrame and typeof(tower.SpawnCFrame) == "CFrame" then
-            towerAxisCache[tower.SpawnCFrame.Position.X] = hash
-        end
-    end
-    lastCacheTime = now
-end
-
-local function ForceRefreshCache()
-    lastCacheTime = 0
-    RefreshTowerCache()
-end
-
-local function GetTowerByAxis(targetX)
-    RefreshTowerCache()
-    local hash = towerAxisCache[targetX]
-    if hash then
-        local towers = TowerClass.GetTowers()
-        local tower = towers[hash]
-        if tower then return hash, tower end
-    end
-
-    ForceRefreshCache()
-    hash = towerAxisCache[targetX]
-    if hash then
-        local towers = TowerClass.GetTowers()
-        return hash, towers[hash]
-    end
-    return nil, nil
-end
-
 task.spawn(function()
     while task.wait(0.5) do
         for hash, tower in pairs(TowerClass.GetTowers()) do
@@ -151,17 +138,28 @@ task.spawn(function()
     end
 end)
 
+local function GetTowerByAxis(targetX)
+    for hash, tower in pairs(TowerClass.GetTowers()) do
+        local spawnCFrame = tower.SpawnCFrame
+        if spawnCFrame and typeof(spawnCFrame) == "CFrame" then
+            if spawnCFrame.Position.X == targetX then
+                return hash, tower
+            end
+        end
+    end
+    return nil, nil
+end
 
+-- [FIX] task.wait(0.05) вместо RenderStepped:Wait() — снижает нагрузку
 local function WaitForTowerInitialization(axisX, timeout)
-    timeout = timeout or 3
+    timeout = timeout or 5
     local startTime = tick()
     while tick() - startTime < timeout do
-        ForceRefreshCache()
         local hash, tower = GetTowerByAxis(axisX)
         if hash and tower and tower.LevelHandler then
             return hash, tower
         end
-        task.wait(0.15)
+        task.wait(0.05)
     end
     return nil, nil
 end
@@ -225,9 +223,9 @@ local function SellAllTowers(skipList)
             task.wait(globalEnv.TDX_Config.MacroStepDelay)
         end
     end
-    ForceRefreshCache()
 end
 
+-- [FIX] Используем кэшированный модуль вместо require каждый раз
 local function GetCurrentUpgradeCost(tower, path)
     if not tower or not tower.LevelHandler then return nil end
     
@@ -249,88 +247,99 @@ local function GetCurrentUpgradeCost(tower, path)
     end
     
     if levelHandler.HasDynamicPriceScaling then
-        pcall(function()
-            dynamicPriceData = TowerClass.GetDynamicPriceScalingData(tower) or {}
-        end)
+        local playerData = TowerClass.GetDynamicPriceScalingData(tower)
+        dynamicPriceData = playerData or {}
     end
     
-    local lhu = GetLHU()
-    if not lhu then return nil end
+    local LHU = GetLevelHandlerUtilities()
+    if not LHU then return nil end
     
     local success, cost = pcall(function()
-        return lhu.GetLevelUpgradeCost(levelHandler, towerName, path, 1, discount, priceMultiplier, dynamicPriceData)
+        return LHU.GetLevelUpgradeCost(levelHandler, towerName, path, 1, discount, priceMultiplier, dynamicPriceData)
     end)
     
     if not success then return nil end
     return cost
 end
 
+-- [FIX] task.wait(0.1) вместо RenderStepped — нет смысла проверять баланс 60 раз/сек
 local function WaitForCash(amount)
-    while cashStat.Value < amount do task.wait(0.2) end
+    while cashStat.Value < amount do task.wait(0.1) end
 end
 
+-- [FIX] SafeRemoteCall теперь блокирующий — InvokeServer ждёт ответа сервера
+-- Это главный фикс: раньше спавнился поток, InvokeServer уходил в фон,
+-- код шёл дальше, не находил башню, спавнил ещё один InvokeServer и т.д.
+-- Результат: десятки одновременных запросов на сервер → замедление
 local function PlaceTowerRetry(args, axisValue)
-    for i = 1, 3 do
-        setThreadIdentity(2)
-        pcall(function() Remotes.PlaceTower:InvokeServer(unpack(args)) end)
-        task.wait(0.2)
-        ForceRefreshCache()
-        local _, tower = GetTowerByAxis(axisValue)
+    for i = 1, getMaxAttempts() do
+        if globalEnv.TDX_Config.UseThreadedRemotes then
+            SafeRemoteCall("InvokeServer", Remotes.PlaceTower, unpack(args))
+        else
+            setThreadIdentity(2)
+            pcall(function() Remotes.PlaceTower:InvokeServer(unpack(args)) end)
+        end
+        task.wait(globalEnv.TDX_Config.MacroStepDelay)
+        local _, tower = WaitForTowerInitialization(axisValue, 3)
         if tower then return true end
     end
     return false
 end
 
+-- [FIX] Верификация апгрейда: task.wait(0.05) вместо RenderStepped, таймаут 2с вместо 3
 local function UpgradeTowerRetry(axisValue, path)
-    for i = 1, 3 do
-        local hash, tower = GetTowerByAxis(axisValue)
-        if not hash then
-            task.wait(0.3)
-            ForceRefreshCache()
-            hash, tower = GetTowerByAxis(axisValue)
-        end
-        if not hash or not tower then return false end
-        
+    for i = 1, getMaxAttempts() do
+        local hash, tower = WaitForTowerInitialization(axisValue)
+        if not hash then task.wait(globalEnv.TDX_Config.MacroStepDelay); continue end
+        local before = tower.LevelHandler:GetLevelOnPath(path)
         local cost = GetCurrentUpgradeCost(tower, path)
-        if not cost then return true end 
-        
+        if not cost then return true end
         WaitForCash(cost)
-        
-        setThreadIdentity(2)
-        pcall(function() Remotes.TowerUpgradeRequest:FireServer(hash, path, 1) end)
-        task.wait(0.12)
-        
-        ForceRefreshCache()
-        local _, t2 = GetTowerByAxis(axisValue)
-        if t2 and t2.LevelHandler then
-            local newLvl = t2.LevelHandler:GetLevelOnPath(path)
-            if newLvl > tower.LevelHandler:GetLevelOnPath(path) then
-                return true
-            end
+
+        if globalEnv.TDX_Config.UseThreadedRemotes then
+            SafeRemoteCall("FireServer", Remotes.TowerUpgradeRequest, hash, path, 1)
+        else
+            setThreadIdentity(2)
+            pcall(function() Remotes.TowerUpgradeRequest:FireServer(hash, path, 1) end)
         end
-        task.wait(0.2)
+
+        task.wait(globalEnv.TDX_Config.MacroStepDelay)
+        local startTime = tick()
+        repeat
+            task.wait(0.05)
+            local _, t = GetTowerByAxis(axisValue)
+            if t and t.LevelHandler and t.LevelHandler:GetLevelOnPath(path) > before then return true end
+        until tick() - startTime > 2
     end
-    return true 
+    return false
 end
 
 local function ChangeTargetRetry(axisValue, targetType)
-    for i = 1, 3 do
+    for i = 1, getMaxAttempts() do
         local hash = GetTowerByAxis(axisValue)
         if hash then
-            setThreadIdentity(2)
-            pcall(function() Remotes.ChangeQueryType:FireServer(hash, targetType) end)
-            task.wait(0.1)
+            if globalEnv.TDX_Config.UseThreadedRemotes then
+                SafeRemoteCall("FireServer", Remotes.ChangeQueryType, hash, targetType)
+            else
+                setThreadIdentity(2)
+                pcall(function() Remotes.ChangeQueryType:FireServer(hash, targetType) end)
+            end
+            task.wait(globalEnv.TDX_Config.MacroStepDelay)
             return true
         end
-        task.wait(0.2)
+        task.wait(globalEnv.TDX_Config.MacroStepDelay)
     end
     return false
 end
 
 local function SkipWaveRetry()
-    setThreadIdentity(2)
-    pcall(function() Remotes.SkipWaveVoteCast:FireServer(true) end)
-    task.wait(0.1)
+    if globalEnv.TDX_Config.UseThreadedRemotes then
+        SafeRemoteCall("FireServer", Remotes.SkipWaveVoteCast, true)
+    else
+        setThreadIdentity(2)
+        pcall(function() Remotes.SkipWaveVoteCast:FireServer(true) end)
+    end
+    task.wait(globalEnv.TDX_Config.MacroStepDelay)
     return true
 end
 
@@ -339,60 +348,64 @@ local function UseMovingSkillRetry(axisValue, skillIndex, location)
     if not TowerUseAbilityRequest then return false end
     local useFireServer = TowerUseAbilityRequest:IsA("RemoteEvent")
 
-    for i = 1, 3 do
-        local hash, tower = GetTowerByAxis(axisValue)
-        if not hash then
-            task.wait(0.3)
-            ForceRefreshCache()
-            hash, tower = GetTowerByAxis(axisValue)
-        end
+    for i = 1, getMaxAttempts() do
+        local hash, tower = WaitForTowerInitialization(axisValue)
         if hash and tower and tower.AbilityHandler then
             local ability = tower.AbilityHandler:GetAbilityFromIndex(skillIndex)
             if ability then
                 local cooldown = ability.CooldownRemaining or 0
                 if cooldown > 0 then task.wait(cooldown + 0.1) end
 
-                setThreadIdentity(2)
                 local success = false
+                setThreadIdentity(2)
 
                 if location == "no_pos" then
                     success = pcall(function()
-                        if useFireServer then TowerUseAbilityRequest:FireServer(hash, skillIndex)
-                        else TowerUseAbilityRequest:InvokeServer(hash, skillIndex) end
+                        if useFireServer then
+                            TowerUseAbilityRequest:FireServer(hash, skillIndex)
+                        else
+                            TowerUseAbilityRequest:InvokeServer(hash, skillIndex)
+                        end
                     end)
                 else
                     local x, y, z = location:match("([^,%s]+),%s*([^,%s]+),%s*([^,%s]+)")
                     if x and y and z then
                         local pos = Vector3.new(tonumber(x), tonumber(y), tonumber(z))
                         success = pcall(function()
-                            if useFireServer then TowerUseAbilityRequest:FireServer(hash, skillIndex, pos)
-                            else TowerUseAbilityRequest:InvokeServer(hash, skillIndex, pos) end
+                            if useFireServer then
+                                TowerUseAbilityRequest:FireServer(hash, skillIndex, pos)
+                            else
+                                TowerUseAbilityRequest:InvokeServer(hash, skillIndex, pos)
+                            end
                         end)
                     end
                 end
 
                 if success then 
-                    task.wait(0.1)
+                    task.wait(globalEnv.TDX_Config.MacroStepDelay)
                     return true 
                 end
             end
         end
-        task.wait(0.2)
+        task.wait(globalEnv.TDX_Config.MacroStepDelay)
     end
     return false
 end
 
 local function SellTowerRetry(axisValue)
-    for i = 1, 3 do
+    for i = 1, getMaxAttempts() do
         local hash = GetTowerByAxis(axisValue)
         if hash then
-            setThreadIdentity(2)
-            pcall(function() Remotes.SellTower:FireServer(hash) end)
-            task.wait(0.15)
-            ForceRefreshCache()
+            if globalEnv.TDX_Config.UseThreadedRemotes then
+                SafeRemoteCall("FireServer", Remotes.SellTower, hash)
+            else
+                setThreadIdentity(2)
+                pcall(function() Remotes.SellTower:FireServer(hash) end)
+            end
+            task.wait(globalEnv.TDX_Config.MacroStepDelay)
             if not GetTowerByAxis(axisValue) then return true end
         end
-        task.wait(0.2)
+        task.wait(globalEnv.TDX_Config.MacroStepDelay)
     end
     return false
 end
@@ -534,7 +547,8 @@ local function StartRebuildSystem(rebuildEntry, towerRecords, skipTypesMap)
 
                     activeJobs[job.x] = nil
                 else
-                    task.wait(0.5)
+                    -- [FIX] task.wait(0.1) вместо RenderStepped для idle воркеров
+                    task.wait(0.1)
                 end
             end
         end)
@@ -544,7 +558,6 @@ local function StartRebuildSystem(rebuildEntry, towerRecords, skipTypesMap)
 
     task.spawn(function()
         while true do
-            ForceRefreshCache()
             local existingTowersCache = {}
             for hash, tower in pairs(TowerClass.GetTowers()) do
                 if tower.SpawnCFrame and typeof(tower.SpawnCFrame) == "CFrame" then
@@ -597,14 +610,11 @@ local function StartRebuildSystem(rebuildEntry, towerRecords, skipTypesMap)
                 end)
             end
 
-            task.wait(config.RebuildCheckInterval or 0.5)
+            task.wait(config.RebuildCheckInterval or 0.1)
         end
     end)
 end
 
--- ═══════════════════════════════════════════════════
--- MAIN
--- ═══════════════════════════════════════════════════
 local function RunMacroRunner()
     local config = globalEnv.TDX_Config
     local macroName = config["Macro Name"] or "event"
@@ -624,8 +634,8 @@ local function RunMacroRunner()
         error("Macro parse error") 
     end
 
-    GetLHU()
-    ForceRefreshCache()
+    -- [FIX] Прогреваем кэш LevelHandlerUtilities до начала макро
+    GetLevelHandlerUtilities()
 
     local gameUI, towerRecords, skipTypesMap, monitorEntries, rebuildSystemActive = getGameUI(), {}, {}, {}, false
 
