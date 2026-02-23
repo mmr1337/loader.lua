@@ -15,6 +15,9 @@ local specialMaps = {
     ["Halloween Part 4"] = true,
     ["Tower Battles"] = true,
     ["Christmas24Part1"] = true,
+    ["Halloween2025"] = true, 
+    ["Christmas25Part2"] = true,
+    ["Christmas25Part1"] = true,
     ["Christmas24Part2"] = true
 }
 
