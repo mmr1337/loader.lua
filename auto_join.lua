@@ -1,12 +1,86 @@
-
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local LocalPlayer = Players.LocalPlayer
 local config = getgenv().TDX_Config or {}
-local targetMapName = config["Map"] or "Christmas24Part1"
-local expectedPlaceId = 9503261072
+
+local currentPlaceId = game.PlaceId
+local lobbyPlaceId = 9503261072
+local gamePlaceId = 11739766412
+
+-- Конвертация ALL CAPS → Title Case: "CASTLE VALLEY" → "Castle Valley"
+local function toTitleCase(str)
+    if not str then return str end
+    local letters = str:gsub("[^%a]", "")
+    if #letters > 0 and letters == letters:upper() then
+        return (str:lower():gsub("(%a)([%a]*)", function(first, rest)
+            return first:upper() .. rest
+        end))
+    end
+    return str
+end
+
+-- Маппинг Auto Difficulty → название карты для лобби
+local difficultyToMap = {
+    ["Nightmare"] = "NightmareWithMapVoting",
+}
+
+----------------------------------------------------------------------
+-- IN-GAME (11739766412): Голосование за карту через remote events
+----------------------------------------------------------------------
+if currentPlaceId == gamePlaceId then
+    local mapVoteName = config["mapvoting"]
+    if not mapVoteName then return end
+
+    -- Ждём атрибут VIP (до 15 секунд)
+    local isVIP = false
+    for i = 1, 30 do
+        local attr = LocalPlayer:GetAttribute("VIP")
+        if attr ~= nil then
+            isVIP = (attr == true)
+            break
+        end
+        task.wait(0.5)
+    end
+
+    if not isVIP then
+        print("⚠️ VIP не активен, голосование за карту пропущено")
+        return
+    end
+
+    local convertedName = toTitleCase(mapVoteName)
+    local Remotes = ReplicatedStorage:WaitForChild("Remotes", 10)
+    if not Remotes then return end
+
+    pcall(function()
+        Remotes.MapOverride:FireServer(convertedName)
+    end)
+    print("✅ MapOverride: " .. convertedName)
+
+    task.wait(1)
+
+    pcall(function()
+        Remotes.MapVoteCast:FireServer(convertedName)
+    end)
+    print("✅ MapVoteCast: " .. convertedName)
+
+    return
+end
+
+----------------------------------------------------------------------
+-- LOBBY (9503261072): Присоединение к APC
+----------------------------------------------------------------------
+if currentPlaceId ~= lobbyPlaceId then return end
+
+-- Определяем целевую карту для APC на основе Auto Difficulty
+local autoDifficulty = config["Auto Difficulty"]
+local targetMapName
+if autoDifficulty then
+    targetMapName = difficultyToMap[autoDifficulty] or autoDifficulty
+else
+    targetMapName = config["Map"] or "Christmas24Part1"
+end
 
 local specialMaps = {
     ["Halloween Part 1"] = true,
@@ -15,7 +89,7 @@ local specialMaps = {
     ["Halloween Part 4"] = true,
     ["Tower Battles"] = true,
     ["Christmas24Part1"] = true,
-    ["Halloween2025"] = true, 
+    ["Halloween2025"] = true,
     ["Christmas25Part2"] = true,
     ["Christmas25Part1"] = true,
     ["NightmareWithMapVoting"] = true,
@@ -24,12 +98,11 @@ local specialMaps = {
     ["Intermediate"] = true,
     ["Expert"] = true,
     ["Endless"] = true,
-    ["Christmas25Part1"] = true,
     ["Christmas24Part2"] = true
 }
 
 local function isInLobby()
-    return game.PlaceId == expectedPlaceId
+    return game.PlaceId == lobbyPlaceId
 end
 
 local function matchMap(a, b)
@@ -67,7 +140,7 @@ local function tryEnterMap()
 
     local LeaveQueue = ReplicatedStorage:FindFirstChild("Network") and ReplicatedStorage.Network:FindFirstChild("LeaveQueue")
     local roots = {
-        Workspace:FindFirstChild("APCs"), 
+        Workspace:FindFirstChild("APCs"),
         Workspace:FindFirstChild("APCs2"),
         Workspace:FindFirstChild("BasementElevators")
     }
@@ -106,7 +179,7 @@ local function tryEnterMap()
                                 pcall(LeaveQueue.FireServer, LeaveQueue)
                                 task.wait()
                             else
-                                -- đợi map trống
+                                -- ждём пока карта освободится
                             end
                         end
                     end
@@ -121,7 +194,7 @@ end
 while isInLobby() do
     local ok, result = pcall(tryEnterMap)
     if not ok then
-        -- lỗi bị bỏ qua
+        -- ошибка игнорируется
     elseif not result then
         break
     end
