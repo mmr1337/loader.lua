@@ -18,6 +18,13 @@ local specialMaps = {
     ["Halloween2025"] = true, 
     ["Christmas25Part2"] = true,
     ["Christmas25Part1"] = true,
+    ["NightmareWithMapVoting"] = true,
+    ["Easy"] = true,
+    ["Elite"] = true,
+    ["Intermediate"] = true,
+    ["Expert"] = true,
+    ["Endless"] = true,
+    ["Christmas25Part1"] = true,
     ["Christmas24Part2"] = true
 }
 
