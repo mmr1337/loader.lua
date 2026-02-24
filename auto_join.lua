@@ -220,6 +220,15 @@ else
         ["Halloween Part 4"] = true,
         ["Tower Battles"] = true,
         ["Christmas24Part1"] = true,
+        ["Halloween2025"] = true,
+        ["Christmas25Part2"] = true,
+        ["Christmas25Part1"] = true,
+        ["NightmareWithMapVoting"] = true,
+        ["Easy"] = true,
+        ["Elite"] = true,
+        ["Intermediate"] = true,
+        ["Expert"] = true,
+        ["Endless"] = true,
         ["Christmas24Part2"] = true
     }
 
