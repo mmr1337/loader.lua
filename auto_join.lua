@@ -230,7 +230,6 @@ else
         ["Intermediate"] = true,
         ["Expert"] = true,
         ["Endless"] = true,
-        ["Christmas25Part1"] = true,
         ["Christmas24Part2"] = true
     }
 
