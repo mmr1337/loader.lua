@@ -59,6 +59,25 @@ if isVIP then
         ["Nightmare"] = "NightmareWithMapVoting",
     }
 
+    local specialMaps = {
+        ["Halloween Part 1"] = true,
+        ["Halloween Part 2"] = true,
+        ["Halloween Part 3"] = true,
+        ["Halloween Part 4"] = true,
+        ["Tower Battles"] = true,
+        ["Christmas24Part1"] = true,
+        ["Halloween2025"] = true,
+        ["Christmas25Part2"] = true,
+        ["Christmas25Part1"] = true,
+        ["NightmareWithMapVoting"] = true,
+        ["Easy"] = true,
+        ["Elite"] = true,
+        ["Intermediate"] = true,
+        ["Expert"] = true,
+        ["Endless"] = true,
+        ["Christmas24Part2"] = true
+    }
+
     -- IN-GAME (11739766412): Голосование за карту
     if currentPlaceId == gamePlaceId then
         local mapVoteName = config["mapvoting"]
@@ -95,30 +114,23 @@ if isVIP then
 
     local autoDifficulty = config["Auto Difficulty"]
     local targetMapName
+
     if autoDifficulty then
-        targetMapName = difficultyToMap[autoDifficulty] or autoDifficulty
+        if difficultyToMap[autoDifficulty] then
+            -- "Nightmare" → "NightmareWithMapVoting"
+            targetMapName = difficultyToMap[autoDifficulty]
+        elseif specialMaps[autoDifficulty] then
+            -- "Elite", "Tower Battles", "Christmas25Part1" и т.д.
+            targetMapName = autoDifficulty
+        else
+            -- "Christmas25Part1Nightmare" и другие составные → берём из config["Map"]
+            targetMapName = config["Map"] or "Christmas24Part1"
+        end
     else
         targetMapName = config["Map"] or "Christmas24Part1"
     end
 
-    local specialMaps = {
-        ["Halloween Part 1"] = true,
-        ["Halloween Part 2"] = true,
-        ["Halloween Part 3"] = true,
-        ["Halloween Part 4"] = true,
-        ["Tower Battles"] = true,
-        ["Christmas24Part1"] = true,
-        ["Halloween2025"] = true,
-        ["Christmas25Part2"] = true,
-        ["Christmas25Part1"] = true,
-        ["NightmareWithMapVoting"] = true,
-        ["Easy"] = true,
-        ["Elite"] = true,
-        ["Intermediate"] = true,
-        ["Expert"] = true,
-        ["Endless"] = true,
-        ["Christmas24Part2"] = true
-    }
+    print("🎯 VIP target map: " .. targetMapName)
 
     local function isInLobby()
         return game.PlaceId == lobbyPlaceId
@@ -206,7 +218,7 @@ if isVIP then
     end
 
 ----------------------------------------------------------------------
--- VIP = FALSE: старая логика (без изменений)
+-- VIP = FALSE: старая логика
 ----------------------------------------------------------------------
 else
     print("⚠️ VIP не активен, используется стандартная логика")
@@ -230,6 +242,7 @@ else
         ["Intermediate"] = true,
         ["Expert"] = true,
         ["Endless"] = true,
+        ["Christmas25Part1"] = true,
         ["Christmas24Part2"] = true
     }
 
