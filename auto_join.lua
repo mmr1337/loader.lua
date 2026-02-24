@@ -9,6 +9,10 @@ local currentPlaceId = game.PlaceId
 local lobbyPlaceId = 9503261072
 local gamePlaceId = 11739766412
 
+----------------------------------------------------------------------
+-- HELPERS
+----------------------------------------------------------------------
+
 -- Конвертация ALL CAPS → Title Case: "CASTLE VALLEY" → "Castle Valley"
 local function toTitleCase(str)
     if not str then return str end
@@ -27,13 +31,13 @@ local difficultyToMap = {
 }
 
 ----------------------------------------------------------------------
--- IN-GAME (11739766412): Голосование за карту через remote events
+-- IN-GAME (11739766412): Голосование за карту (ТОЛЬКО для VIP)
 ----------------------------------------------------------------------
 if currentPlaceId == gamePlaceId then
     local mapVoteName = config["mapvoting"]
     if not mapVoteName then return end
 
-    -- Ждём атрибут VIP (до 15 секунд)
+    -- Проверка VIP
     local isVIP = false
     for i = 1, 30 do
         local attr = LocalPlayer:GetAttribute("VIP")
@@ -69,7 +73,7 @@ if currentPlaceId == gamePlaceId then
 
     task.wait(1)
 
-    -- 3. MapVoteReady (последний, без аргументов)
+    -- 3. MapVoteReady
     pcall(function()
         Remotes.MapVoteReady:FireServer()
     end)
@@ -79,7 +83,7 @@ if currentPlaceId == gamePlaceId then
 end
 
 ----------------------------------------------------------------------
--- LOBBY (9503261072): Присоединение к APC
+-- LOBBY (9503261072): Присоединение к APC (работает БЕЗ VIP)
 ----------------------------------------------------------------------
 if currentPlaceId ~= lobbyPlaceId then return end
 
