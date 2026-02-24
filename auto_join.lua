@@ -23,7 +23,7 @@ for i = 1, 30 do
 end
 
 ----------------------------------------------------------------------
--- HELPERS
+-- HELPERS (общие)
 ----------------------------------------------------------------------
 
 local function toTitleCase(str)
@@ -37,10 +37,6 @@ local function toTitleCase(str)
     return str
 end
 
-local difficultyToMap = {
-    ["Nightmare"] = "NightmareWithMapVoting",
-}
-
 local function matchMap(a, b)
     return tostring(a or "") == tostring(b or "")
 end
@@ -53,14 +49,15 @@ local function enterDetectorExact(detector)
     end
 end
 
-local function isInLobby()
-    return game.PlaceId == lobbyPlaceId
-end
-
 ----------------------------------------------------------------------
 -- VIP = TRUE
 ----------------------------------------------------------------------
 if isVIP then
+    print("✅ VIP активен, используется VIP логика")
+
+    local difficultyToMap = {
+        ["Nightmare"] = "NightmareWithMapVoting",
+    }
 
     -- IN-GAME (11739766412): Голосование за карту
     if currentPlaceId == gamePlaceId then
@@ -93,7 +90,7 @@ if isVIP then
         return
     end
 
-    -- LOBBY (9503261072): VIP логика с remote events + APC
+    -- LOBBY (9503261072): VIP логика
     if currentPlaceId ~= lobbyPlaceId then return end
 
     local autoDifficulty = config["Auto Difficulty"]
@@ -122,6 +119,10 @@ if isVIP then
         ["Endless"] = true,
         ["Christmas24Part2"] = true
     }
+
+    local function isInLobby()
+        return game.PlaceId == lobbyPlaceId
+    end
 
     local function trySetMapIfNeeded()
         if specialMaps[targetMapName] then
@@ -205,10 +206,10 @@ if isVIP then
     end
 
 ----------------------------------------------------------------------
--- VIP = FALSE: старая логика без remote events
+-- VIP = FALSE: старая логика (без изменений)
 ----------------------------------------------------------------------
 else
-    print("⚠️ VIP не активен, используется старая логика без remote events")
+    print("⚠️ VIP не активен, используется стандартная логика")
 
     local targetMapName = config["Map"] or "Christmas24Part1"
     local expectedPlaceId = 9503261072
@@ -229,14 +230,15 @@ else
         ["Intermediate"] = true,
         ["Expert"] = true,
         ["Endless"] = true,
+        ["Christmas25Part1"] = true,
         ["Christmas24Part2"] = true
     }
 
-    local function isInLobbyOld()
+    local function isInLobby()
         return game.PlaceId == expectedPlaceId
     end
 
-    local function trySetMapIfNeededOld()
+    local function trySetMapIfNeeded()
         if specialMaps[targetMapName] then
             local argsPartyType = { "Party" }
             ReplicatedStorage:WaitForChild("Network"):WaitForChild("ClientChangePartyTypeRequest"):FireServer(unpack(argsPartyType))
@@ -250,12 +252,12 @@ else
         end
     end
 
-    local function tryEnterMapOld()
-        if not isInLobbyOld() then
+    local function tryEnterMap()
+        if not isInLobby() then
             return false
         end
 
-        trySetMapIfNeededOld()
+        trySetMapIfNeeded()
 
         local LeaveQueue = ReplicatedStorage:FindFirstChild("Network") and ReplicatedStorage.Network:FindFirstChild("LeaveQueue")
         local roots = {
@@ -308,8 +310,8 @@ else
         return true
     end
 
-    while isInLobbyOld() do
-        local ok, result = pcall(tryEnterMapOld)
+    while isInLobby() do
+        local ok, result = pcall(tryEnterMap)
         if not ok then
         elseif not result then
             break
