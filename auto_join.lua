@@ -10,10 +10,26 @@ local lobbyPlaceId = 9503261072
 local gamePlaceId = 11739766412
 
 ----------------------------------------------------------------------
+-- VIP проверка (общая)
+----------------------------------------------------------------------
+local isVIP = false
+for i = 1, 30 do
+    local attr = LocalPlayer:GetAttribute("VIP")
+    if attr ~= nil then
+        isVIP = (attr == true)
+        break
+    end
+    task.wait(0.5)
+end
+
+if not isVIP then
+    print("⚠️ VIP не активен, remote events не будут выполняться")
+end
+
+----------------------------------------------------------------------
 -- HELPERS
 ----------------------------------------------------------------------
 
--- Конвертация ALL CAPS → Title Case: "CASTLE VALLEY" → "Castle Valley"
 local function toTitleCase(str)
     if not str then return str end
     local letters = str:gsub("[^%a]", "")
@@ -25,39 +41,26 @@ local function toTitleCase(str)
     return str
 end
 
--- Маппинг Auto Difficulty → название карты для лобби
 local difficultyToMap = {
     ["Nightmare"] = "NightmareWithMapVoting",
 }
 
 ----------------------------------------------------------------------
--- IN-GAME (11739766412): Голосование за карту (ТОЛЬКО для VIP)
+-- IN-GAME (11739766412): Голосование за карту (ТОЛЬКО VIP)
 ----------------------------------------------------------------------
 if currentPlaceId == gamePlaceId then
-    local mapVoteName = config["mapvoting"]
-    if not mapVoteName then return end
-
-    -- Проверка VIP
-    local isVIP = false
-    for i = 1, 30 do
-        local attr = LocalPlayer:GetAttribute("VIP")
-        if attr ~= nil then
-            isVIP = (attr == true)
-            break
-        end
-        task.wait(0.5)
-    end
-
     if not isVIP then
-        print("⚠️ VIP не активен, голосование за карту пропущено")
+        print("⚠️ VIP нет — голосование за карту пропущено")
         return
     end
+
+    local mapVoteName = config["mapvoting"]
+    if not mapVoteName then return end
 
     local convertedName = toTitleCase(mapVoteName)
     local Remotes = ReplicatedStorage:WaitForChild("Remotes", 10)
     if not Remotes then return end
 
-    -- 1. MapOverride
     pcall(function()
         Remotes.MapOverride:FireServer(convertedName)
     end)
@@ -65,7 +68,6 @@ if currentPlaceId == gamePlaceId then
 
     task.wait(1)
 
-    -- 2. MapVoteCast
     pcall(function()
         Remotes.MapVoteCast:FireServer(convertedName)
     end)
@@ -73,7 +75,6 @@ if currentPlaceId == gamePlaceId then
 
     task.wait(1)
 
-    -- 3. MapVoteReady
     pcall(function()
         Remotes.MapVoteReady:FireServer()
     end)
@@ -83,11 +84,12 @@ if currentPlaceId == gamePlaceId then
 end
 
 ----------------------------------------------------------------------
--- LOBBY (9503261072): Присоединение к APC (работает БЕЗ VIP)
+-- LOBBY (9503261072): Присоединение к APC
+-- VIP → remote events (выбор карты) + вход в APC
+-- Без VIP → только физический вход в APC (без remote events)
 ----------------------------------------------------------------------
 if currentPlaceId ~= lobbyPlaceId then return end
 
--- Определяем целевую карту для APC на основе Auto Difficulty
 local autoDifficulty = config["Auto Difficulty"]
 local targetMapName
 if autoDifficulty then
@@ -132,6 +134,8 @@ local function enterDetectorExact(detector)
 end
 
 local function trySetMapIfNeeded()
+    if not isVIP then return end
+
     if specialMaps[targetMapName] then
         local argsPartyType = { "Party" }
         ReplicatedStorage:WaitForChild("Network"):WaitForChild("ClientChangePartyTypeRequest"):FireServer(unpack(argsPartyType))
@@ -189,7 +193,7 @@ local function tryEnterMap()
                             if cur == 0 and max == 4 then
                                 enterDetectorExact(detector)
                                 return true
-                            elseif cur >= 2 and max == 4 and LeaveQueue then
+                            elseif cur >= 2 and max == 4 and LeaveQueue and isVIP then
                                 pcall(LeaveQueue.FireServer, LeaveQueue)
                                 task.wait()
                             else
