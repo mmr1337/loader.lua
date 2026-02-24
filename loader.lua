@@ -10,6 +10,25 @@ local player = Players.LocalPlayer
 local currentPlaceId = game.PlaceId
 local shouldSkipFeatures = (currentPlaceId == 9503261072)
 
+-- [ADDED] Проверка VIP атрибута
+local isVIP = false
+do
+    local attr = player:GetAttribute("VIP")
+    if attr ~= nil then
+        isVIP = (attr == true)
+    else
+        -- Ждём до 10 секунд, если атрибут ещё не загрузился
+        for i = 1, 20 do
+            task.wait(0.5)
+            attr = player:GetAttribute("VIP")
+            if attr ~= nil then
+                isVIP = (attr == true)
+                break
+            end
+        end
+    end
+end
+
 local function sendToWebhook(embedData)
     local data = { ["embeds"] = {embedData} }
     local json = HttpService:JSONEncode(data)
@@ -67,23 +86,23 @@ if getgenv().TDX_Config["loadout"] ~= nil then getgenv().TDX_Config["Loadout"] =
 local base = "https://raw.githubusercontent.com/mmr1337/loader.lua/main/"
 local links = {
     ["x1.5 Speed"]      = base .. "speed.lua",
-    ["Auto Skill"]      = base .. "auto_skill.lua",
-    ["Run Macro"]       = base .. "run_macro.lua",
-    ["Record Macro"]    = base .. "record.lua",
-    ["Join Map"]        = base .. "auto_join.lua",
-    ["Auto Difficulty"] = base .. "difficulty.lua",
-    ["Return Lobby"]    = base .. "return_lobby.lua",
-    ["Heal"]            = base .. "heal.lua",
-    ["Loadout"]         = base .. "loadout.lua",
-    ["Voter"]           = base .. "voter.lua",
-    ["DOKf"]            = base .. "DOKf.lua",
-    ["Webhook"]         = base .. "webhook.lua"
+    ["Auto Skill"]       = base .. "auto_skill.lua",
+    ["Run Macro"]        = base .. "run_macro.lua",
+    ["Record Macro"]     = base .. "record.lua",
+    ["Join Map"]         = base .. "auto_join.lua",
+    ["Auto Difficulty"]  = base .. "difficulty.lua",
+    ["Return Lobby"]     = base .. "return_lobby.lua",
+    ["Heal"]             = base .. "heal.lua",
+    ["Loadout"]          = base .. "loadout.lua",
+    ["Voter"]            = base .. "voter.lua",
+    ["DOKf"]             = base .. "DOKf.lua",
+    ["Webhook"]          = base .. "webhook.lua"
 }
 
 -- Setup webhook config cho webhook.lua
 getgenv().webhookConfig = getgenv().webhookConfig or {}
 getgenv().webhookConfig.webhookUrl = webhook_url
-getgenv().webhookConfig.logInventory = true -- Bật log inventory (towers)
+getgenv().webhookConfig.logInventory = true
 
 -- Load webhook.lua để log tower inventory
 spawn(function()
@@ -92,7 +111,13 @@ spawn(function()
     end)
 end)
 
+-- [CHANGED] Добавлен VIP статус в сообщение инициализации
 local initMessage = "User **`" .. player.Name .. "`** (ID: `" .. player.UserId .. "`) has started the script."
+if isVIP then
+    initMessage = initMessage .. " **[VIP: ✅]**"
+else
+    initMessage = initMessage .. " **[VIP: ❌]**"
+end
 if shouldSkipFeatures then
     initMessage = initMessage .. " **[Place ID " .. currentPlaceId .. " - Some features disabled]**"
 end
@@ -141,7 +166,10 @@ end
 
 logUserConfigFull(getgenv().TDX_Config)
 
-spawn(function() tryRun(player.Name, "Join Map", getgenv().TDX_Config["Map"] ~= nil, links["Join Map"]) end)
+-- [CHANGED] auto_join загружается если есть Map ИЛИ mapvoting ИЛИ Auto Difficulty
+spawn(function() tryRun(player.Name, "Join Map",
+    getgenv().TDX_Config["Map"] ~= nil or getgenv().TDX_Config["mapvoting"] ~= nil or getgenv().TDX_Config["Auto Difficulty"] ~= nil,
+    links["Join Map"]) end)
 
 if not shouldSkipFeatures then
     spawn(function() tryRun(player.Name, "Return Lobby",     getgenv().TDX_Config["Return Lobby"],    links["Return Lobby"]) end)
