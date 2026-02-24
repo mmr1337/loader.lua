@@ -44,7 +44,7 @@ if makefolder then
 end
 
 --==============================================================================
---=                           HÀM TIỆN ÍCH (HELPERS)                           =
+--=                           HELPERS                                          =
 --==============================================================================
 
 local function safeWriteFile(path, content)
@@ -156,21 +156,6 @@ local function GetTowerNameByHash(towerHash)
     return nil
 end
 
-local function IsMovingSkillTower(towerName, skillIndex)
-    if not towerName or not skillIndex then return false end
-    if towerName == "Helicopter" and (skillIndex == 1 or skillIndex == 3) then return true end
-    if towerName == "Cryo Helicopter" and (skillIndex == 1 or skillIndex == 3) then return true end
-    if towerName == "Jet Trooper" and skillIndex == 1 then return true end
-    return false
-end
-
-local function IsPositionRequiredSkill(towerName, skillIndex)
-    if not towerName or not skillIndex then return false end
-    if skillIndex == 1 then return true end
-    if skillIndex == 3 then return false end
-    return true
-end
-
 local function updateJsonFile()
     if not HttpService then return end
     local jsonLines = {}
@@ -229,14 +214,14 @@ local function parseMacroLine(line)
         end
     end
 
-    local hash, skillIndex = line:match('TDX:useSkill%(([^,]+),%s*([^%)]+)%)')
-    if hash and skillIndex then
-        local pos = hash2pos[tostring(hash)]
+    local hash2, skillIndex2 = line:match('TDX:useSkill%(([^,]+),%s*([^%)]+)%)')
+    if hash2 and skillIndex2 then
+        local pos = hash2pos[tostring(hash2)]
         if pos then
             local currentWave, currentTime = getCurrentWaveAndTime()
             return {{
                 towermoving = pos.x,
-                skillindex = tonumber(skillIndex),
+                skillindex = tonumber(skillIndex2),
                 location = "no_pos",
                 wave = currentWave,
                 time = convertTimeToNumber(currentTime)
@@ -255,9 +240,9 @@ local function parseMacroLine(line)
         }}
     end
 
-    local hash, path, upgradeCount = line:match('TDX:upgradeTower%(([^,]+),%s*([^,]+),%s*([^%)]+)%)')
-    if hash and path and upgradeCount then
-        local pos = hash2pos[tostring(hash)]
+    local hash3, path, upgradeCount = line:match('TDX:upgradeTower%(([^,]+),%s*([^,]+),%s*([^%)]+)%)')
+    if hash3 and path and upgradeCount then
+        local pos = hash2pos[tostring(hash3)]
         local pathNum, count = tonumber(path), tonumber(upgradeCount)
         if pos and pathNum and count and count > 0 then
             local entries = {}
@@ -272,9 +257,9 @@ local function parseMacroLine(line)
         end
     end
 
-    local hash, targetType = line:match('TDX:changeQueryType%(([^,]+),%s*([^%)]+)%)')
-    if hash and targetType then
-        local pos = hash2pos[tostring(hash)]
+    local hash4, targetType = line:match('TDX:changeQueryType%(([^,]+),%s*([^%)]+)%)')
+    if hash4 and targetType then
+        local pos = hash2pos[tostring(hash4)]
         if pos then
             local currentWave, currentTime = getCurrentWaveAndTime()
             return {{
@@ -286,10 +271,9 @@ local function parseMacroLine(line)
         end
     end
 
-    -- ИСПРАВЛЕНО: Сначала пробуем формат ТОЛЬКО с hash (как приходит из handleRemote)
-    local hash = line:match('TDX:sellTower%(([^%)]+)%)')
-    if hash then
-        local pos = hash2pos[tostring(hash)]
+    local hash5 = line:match('TDX:sellTower%(([^%)]+)%)')
+    if hash5 then
+        local pos = hash2pos[tostring(hash5)]
         if pos then
             local currentWave, currentTime = getCurrentWaveAndTime()
             return {{ 
@@ -348,7 +332,7 @@ local function processAndWriteAction(commandString)
 end
 
 --==============================================================================
---=                      XỬ LÝ SỰ KIỆN & HOOKS                                 =
+--=                      EVENTS & HOOKS                                        =
 --==============================================================================
 
 local function setPending(typeStr, code, hash)
@@ -470,26 +454,27 @@ local function handleRemote(name, args)
     if name == "TowerUseAbilityRequest" then
         local towerHash, skillIndex, targetPos = unpack(args)
         if typeof(towerHash) == "number" and typeof(skillIndex) == "number" then
-            local towerName = GetTowerNameByHash(towerHash)
-            if IsMovingSkillTower(towerName, skillIndex) then
-                local code
+            local code
 
-                if IsPositionRequiredSkill(towerName, skillIndex) and typeof(targetPos) == "Vector3" then
-                    code = string.format("TDX:useMovingSkill(%s, %d, Vector3.new(%s, %s, %s))", 
-                        tostring(towerHash), 
-                        skillIndex, 
-                        tostring(targetPos.X), 
-                        tostring(targetPos.Y), 
-                        tostring(targetPos.Z))
-                elseif not IsPositionRequiredSkill(towerName, skillIndex) then
-                    code = string.format("TDX:useSkill(%s, %d)", 
-                        tostring(towerHash), 
-                        skillIndex)
-                end
+            if typeof(targetPos) == "Vector3" then
+                code = string.format(
+                    "TDX:useMovingSkill(%s, %d, Vector3.new(%s, %s, %s))",
+                    tostring(towerHash),
+                    skillIndex,
+                    tostring(targetPos.X),
+                    tostring(targetPos.Y),
+                    tostring(targetPos.Z)
+                )
+            else
+                code = string.format(
+                    "TDX:useSkill(%s, %d)",
+                    tostring(towerHash),
+                    skillIndex
+                )
+            end
 
-                if code then
-                    setPending("MovingSkill", code, towerHash)
-                end
+            if code then
+                setPending("MovingSkill", code, towerHash)
             end
         end
     end
@@ -506,7 +491,6 @@ local function handleRemote(name, args)
             setPending("Place", code)
         end
     elseif name == "SellTower" then
-        -- ИСПРАВЛЕНО: Только hash, как в твоём example!
         setPending("Sell", "TDX:sellTower("..tostring(args[1])..")")
     elseif name == "ChangeQueryType" then
         local towerHash, targetType = unpack(args)
@@ -550,7 +534,7 @@ local function setupHooks()
 end
 
 --==============================================================================
---=                         VÒNG LẶP & KHỞI TẠO                               =
+--=                         INIT                                               =
 --==============================================================================
 
 task.spawn(function()
