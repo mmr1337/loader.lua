@@ -53,6 +53,7 @@ if currentPlaceId == gamePlaceId then
     local Remotes = ReplicatedStorage:WaitForChild("Remotes", 10)
     if not Remotes then return end
 
+    -- 1. MapOverride
     pcall(function()
         Remotes.MapOverride:FireServer(convertedName)
     end)
@@ -60,10 +61,19 @@ if currentPlaceId == gamePlaceId then
 
     task.wait(1)
 
+    -- 2. MapVoteCast
     pcall(function()
         Remotes.MapVoteCast:FireServer(convertedName)
     end)
     print("✅ MapVoteCast: " .. convertedName)
+
+    task.wait(1)
+
+    -- 3. MapVoteReady (последний, без аргументов)
+    pcall(function()
+        Remotes.MapVoteReady:FireServer()
+    end)
+    print("✅ MapVoteReady")
 
     return
 end
