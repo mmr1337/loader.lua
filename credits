@@ -1,18 +1,106 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
+local player = Players.LocalPlayer
 
-local GITHUB_URL = "https://raw.githubusercontent.com/mmr1337/loader.lua/main/upgradeshop.json"
-local JSON_SOURCE = "tdx/upgradeshop.json"
-local SPAM_DELAY = 1
-local SUCCESS_DELAY = 0.5
+local GITHUB_URL = "https://raw.githubusercontent.com/mmr1337/loader.lua/refs/heads/main/tester.json"
+local JSON_SOURCE = "tdx/tester.json"
+local SUCCESS_DELAY = 0.4
+local CREDIT_CHECK_INTERVAL = 0.5
+local MAX_WAIT_CREDITS = 9999
+local LOG_INTERVAL = 15
 
-if makefolder then
-    pcall(makefolder, "tdx")
+if makefolder then pcall(makefolder, "tdx") end
+
+local TDX_Shared = ReplicatedStorage:WaitForChild("TDX_Shared"):WaitForChild("Common")
+local TowerUpgradeShopUtilities = nil
+
+pcall(function()
+    require(TDX_Shared:WaitForChild("Enums"))
+    require(TDX_Shared:WaitForChild("Types"))
+    TowerUpgradeShopUtilities = require(TDX_Shared:WaitForChild("TowerUpgradeShopUtilities"))
+end)
+
+local dataHandler = nil
+
+local function findLocalPlayerHandler()
+    if not getgc then return nil end
+    for _, obj in pairs(getgc(true)) do
+        if type(obj) == "table"
+            and rawget(obj, "IsLocalPlayer") == true
+            and rawget(obj, "UpgradeShopDataHandler") ~= nil
+            and type(rawget(obj, "UpgradeShopDataHandler")) == "table" then
+            return obj.UpgradeShopDataHandler
+        end
+    end
+    return nil
+end
+
+local function ensureHandler()
+    if dataHandler then return dataHandler end
+    dataHandler = findLocalPlayerHandler()
+    return dataHandler
+end
+
+local function waitForHandler(timeout)
+    for i = 1, (timeout or 30) do
+        if ensureHandler() then return dataHandler end
+        task.wait(1)
+    end
+    return nil
+end
+
+local function getCredits()
+    local handler = ensureHandler()
+    return handler and handler.Credits or 0
+end
+
+local function getUpgradeCost(tower, upgradeType)
+    local handler = ensureHandler()
+    if not handler or not TowerUpgradeShopUtilities then return nil end
+    local ok, result = pcall(function()
+        local itemData = TowerUpgradeShopUtilities.GetUpgradeShopItemDataForTower(tower, upgradeType)
+        if not itemData then return nil end
+        local activeData = TowerUpgradeShopUtilities.GetActiveUpgradeShopData(
+            handler.TowerToUpgradeTypeToActiveUpgradeData, tower, upgradeType
+        )
+        if not activeData then return nil end
+        return TowerUpgradeShopUtilities.GetOperationCost(activeData, itemData)
+    end)
+    return ok and result or nil
+end
+
+local function getCurrentLevel(tower, upgradeType)
+    local handler = ensureHandler()
+    if not handler or not TowerUpgradeShopUtilities then return nil end
+    local ok, result = pcall(function()
+        return TowerUpgradeShopUtilities.GetCurrentLevelForTowerAndType(
+            handler.TowerToUpgradeTypeToActiveUpgradeData, tower, upgradeType
+        )
+    end)
+    return ok and result or nil
+end
+
+local function canPerformOperation(tower, upgradeType)
+    local handler = ensureHandler()
+    if not handler or not TowerUpgradeShopUtilities then return nil, nil end
+    local ok, canDo, reason = pcall(function()
+        local itemData = TowerUpgradeShopUtilities.GetUpgradeShopItemDataForTower(tower, upgradeType)
+        if not itemData then return false, "Невалидный апгрейд" end
+        local activeData = TowerUpgradeShopUtilities.GetActiveUpgradeShopData(
+            handler.TowerToUpgradeTypeToActiveUpgradeData, tower, upgradeType
+        )
+        return TowerUpgradeShopUtilities.CanPerformOperation(
+            activeData, itemData, handler.Credits, nil, nil
+        )
+    end)
+    if ok then return canDo, reason end
+    return nil, nil
 end
 
 local function downloadJSON()
-    local success, result = pcall(game.HttpGet, game, GITHUB_URL)
-    if success and writefile then
+    local ok, result = pcall(game.HttpGet, game, GITHUB_URL)
+    if ok and result and writefile then
         pcall(writefile, JSON_SOURCE, result)
         return true
     end
@@ -20,76 +108,109 @@ local function downloadJSON()
 end
 
 local function loadJSON(source)
-    local jsonContent
-    
-    if not isfile or not readfile then
-        return nil
-    end
-    
-    if not isfile(source) then
-        return nil
-    end
-    
-    local success, result = pcall(readfile, source)
-    if not success then
-        return nil
-    end
-    jsonContent = result
-    
-    local success2, decoded = pcall(HttpService.JSONDecode, HttpService, jsonContent)
-    if not success2 then
-        return nil
-    end
-    
-    return decoded
+    if not isfile or not readfile or not isfile(source) then return nil end
+    local ok, raw = pcall(readfile, source)
+    if not ok then return nil end
+    local ok2, decoded = pcall(HttpService.JSONDecode, HttpService, raw)
+    return ok2 and decoded or nil
 end
 
-local function spamUntilSuccess(tower, upgradeType, cost)
-    while true do
-        local success, result = pcall(function()
-            return ReplicatedStorage.Remotes.UpgradeShopOperationRequest:InvokeServer(tower, upgradeType)
-        end)
-        
-        if not success then
-            task.wait(SPAM_DELAY)
-        elseif result == true then
-            return true
-        else
-            task.wait(SPAM_DELAY)
-        end
+local function waitForCredits(needed, index, total, tower, upgradeType)
+    local elapsed = 0
+    local lastLog = -LOG_INTERVAL
+    while elapsed < MAX_WAIT_CREDITS do
+        local credits = getCredits()
+        if credits >= needed then return true end
+        task.wait(CREDIT_CHECK_INTERVAL)
+        elapsed = elapsed + CREDIT_CHECK_INTERVAL
     end
+    return false
 end
 
 local function processAction(action, index, total)
-    if not action.UpgradeShopTower or not action.UpgradeShopType then
-        return false
-    end
-    
     local tower = action.UpgradeShopTower
     local upgradeType = action.UpgradeShopType
-    local cost = action.UpgradeShopCost or 0
-    
-    return spamUntilSuccess(tower, upgradeType, cost)
+    local targetLevel = action.UpgradeShopLevel
+    local jsonCost = action.UpgradeShopCost or 0
+
+    if not tower or not upgradeType then return "skip" end
+
+    local currentLevel = getCurrentLevel(tower, upgradeType) or 0
+    if targetLevel and targetLevel > 0 and currentLevel >= targetLevel then
+        return "skip"
+    end
+
+    local gameCost = getUpgradeCost(tower, upgradeType)
+    if gameCost ~= nil and gameCost <= 0 then return "skip" end
+
+    local cost = gameCost or jsonCost
+
+    local canDo, reason = canPerformOperation(tower, upgradeType)
+    if canDo == false and reason then
+        local isCreditsIssue = string.find(string.lower(tostring(reason)), "credit")
+                            or string.find(string.lower(tostring(reason)), "cost")
+                            or string.find(string.lower(tostring(reason)), "afford")
+        if not isCreditsIssue then return "skip" end
+    end
+
+    local credits = getCredits()
+
+    if cost > 0 and credits < cost then
+        if not waitForCredits(cost, index, total, tower, upgradeType) then
+            return "timeout"
+        end
+        local newCost = getUpgradeCost(tower, upgradeType)
+        if newCost and newCost > 0 and newCost ~= cost then
+            cost = newCost
+            if getCredits() < cost then
+                if not waitForCredits(cost, index, total, tower, upgradeType) then
+                    return "timeout"
+                end
+            end
+        end
+    end
+
+    local finalCanDo, finalReason = canPerformOperation(tower, upgradeType)
+    if finalCanDo == false then return "fail" end
+
+    local ok, result = pcall(function()
+        return ReplicatedStorage.Remotes.UpgradeShopOperationRequest:InvokeServer(tower, upgradeType)
+    end)
+
+    if not ok then return "fail" end
+
+    if result == true then
+        task.wait(SUCCESS_DELAY)
+        return "success"
+    else
+        task.wait(1)
+        local retryCanDo = canPerformOperation(tower, upgradeType)
+        if retryCanDo then
+            local ok2, result2 = pcall(function()
+                return ReplicatedStorage.Remotes.UpgradeShopOperationRequest:InvokeServer(tower, upgradeType)
+            end)
+            if ok2 and result2 == true then
+                task.wait(SUCCESS_DELAY)
+                return "success"
+            end
+        end
+        return "fail"
+    end
 end
 
 local function runMacro(actions)
-    if not actions or #actions == 0 then
-        return
-    end
-    
+    if not actions or #actions == 0 then return end
+    local stats = { success = 0, skip = 0, fail = 0, timeout = 0 }
     for i, action in ipairs(actions) do
-        local success = processAction(action, i, #actions)
-        
-        if success then
-            task.wait(SUCCESS_DELAY)
-        end
+        local result = processAction(action, i, #actions)
+        stats[result] = (stats[result] or 0) + 1
     end
 end
 
+waitForHandler(20)
 downloadJSON()
-
 local actions = loadJSON(JSON_SOURCE)
-
 if actions then
+    task.wait(2)
     runMacro(actions)
 end
