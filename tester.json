@@ -1,0 +1,11 @@
+[
+{"UpgradeShopCost":125,"UpgradeShopTower":"Sentry","UpgradeShopType":"Range","UpgradeShopLevel":1},
+{"UpgradeShopCost":200,"UpgradeShopTower":"Sentry","UpgradeShopType":"Range","UpgradeShopLevel":2},
+{"UpgradeShopCost":275,"UpgradeShopTower":"Sentry","UpgradeShopType":"Range","UpgradeShopLevel":3},
+{"UpgradeShopCost":350,"UpgradeShopTower":"Sentry","UpgradeShopType":"Range","UpgradeShopLevel":4},
+{"UpgradeShopCost":425,"UpgradeShopTower":"Sentry","UpgradeShopType":"Range","UpgradeShopLevel":5},
+{"UpgradeShopCost":100,"UpgradeShopTower":"Sentry","UpgradeShopType":"Damage","UpgradeShopLevel":1},
+{"UpgradeShopCost":250,"UpgradeShopTower":"Sentry","UpgradeShopType":"Damage","UpgradeShopLevel":2},
+{"UpgradeShopCost":400,"UpgradeShopTower":"Sentry","UpgradeShopType":"Damage","UpgradeShopLevel":3},
+{"UpgradeShopCost":550,"UpgradeShopTower":"Sentry","UpgradeShopType":"Damage","UpgradeShopLevel":4}
+]
