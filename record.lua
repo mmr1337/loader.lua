@@ -169,15 +169,13 @@ local function getCurrentWaveAndTime()
     if not default then return nil, nil end
     
     local waveFrame = default:FindFirstChild("Wave")
-    local timerFrame = default:FindFirstChild("Timer")
+    local timerFrame = default:FindFirstChild("TimeLeft")
     local waveText = waveFrame and waveFrame:FindFirstChild("WaveText")
-    local timerText = timerFrame and timerFrame:FindFirstChild("TimerText")
+    local timerText = timerFrame and timerFrame:FindFirstChild("TimeLeftText")
     local waveNum = nil
     local timeStr = nil
     if waveText and waveText:IsA("TextLabel") then
-        local raw = tostring(waveText.Text)
-        local num = raw:match("Wave (%d+)")
-        waveNum = tonumber(num)
+        waveNum = tostring(waveText.Text)
     end
     if timerText and timerText:IsA("TextLabel") then
         timeStr = tostring(timerText.Text)
