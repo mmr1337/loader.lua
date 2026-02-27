@@ -1,49 +1,88 @@
-repeat wait() until game:IsLoaded() and game.Players.LocalPlayer
+repeat task.wait() until game:IsLoaded()
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
+
+local LOBBY_PLACE_ID = 9503261072
+
+local DataService = require(
+    ReplicatedStorage
+        :WaitForChild("TDX_Shared")
+        :WaitForChild("Client")
+        :WaitForChild("Services")
+        :WaitForChild("Data")
+)
 
 local MAX_RETRY = 3
 
--- lấy webhook URL
 local function getWebhookURL()
     return getgenv().webhookConfig and getgenv().webhookConfig.webhookUrl or ""
 end
 
--- format thời gian
 local function formatTime(seconds)
     seconds = tonumber(seconds)
     if not seconds then return "N/A" end
-    local mins = math.floor(seconds / 60)
-    local secs = math.floor(seconds % 60)
-    return string.format("%dm %ds", mins, secs)
+    return string.format("%dm %ds", math.floor(seconds / 60), math.floor(seconds % 60))
 end
 
--- gửi dữ liệu lên webhook
+local function safeGetData(key)
+    if DataService and DataService.Get then
+        return DataService.Get(key)
+    end
+    return nil
+end
+
 local function sendToWebhook(data)
     local url = getWebhookURL()
     if url == "" then return end
 
+    local embedFields = {}
+    local content = {}
+
+    for k, v in pairs(data.stats or data.rewards or {}) do
+        content[k] = v
+    end
+
+    local function addField(name, value, inline)
+        if value == nil then return end
+        table.insert(embedFields, {
+            name   = tostring(name),
+            value  = tostring(value),
+            inline = inline
+        })
+    end
+
+    -- Player lên đầu, dùng spoiler để che
+    table.insert(embedFields, {
+        name   = "Player",
+        value  = "||" .. LocalPlayer.Name .. "||",
+        inline = false
+    })
+
+    local priorityKeys = {
+        "Map", "Mode", "Result", "Wave", "Time",
+        "Level", "Wins",
+        "Gold", "Crystals", "Cookies", "Envelopes", "Tokens", "XP"
+    }
+
+    for _, key in ipairs(priorityKeys) do
+        if content[key] ~= nil then
+            addField(key, content[key], true)
+            content[key] = nil
+        end
+    end
+
+    for k, v in pairs(content) do
+        addField(k, v, false)
+    end
+
     local body = HttpService:JSONEncode({
         embeds = {{
-            title = data.type == "game" and "Game Result" or "Lobby Info",
-            color = 0x5B9DFF,
-            fields = (function()
-                local fields = {}
-                local function addFields(tab, prefix)
-                    prefix = prefix and (prefix .. " ") or ""
-                    for k, v in pairs(tab) do
-                        if typeof(v) == "table" then
-                            addFields(v, prefix .. k)
-                        else
-                            table.insert(fields, {name = prefix .. tostring(k), value = tostring(v), inline = false})
-                        end
-                    end
-                end
-                addFields(data.rewards or data.stats or data)
-                return fields
-            end)()
+            title  = data.type == "game" and "Game Result" or "Lobby Info",
+            color  = 0x5B9DFF,
+            fields = embedFields,
         }}
     })
 
@@ -52,177 +91,184 @@ local function sendToWebhook(data)
             local success = pcall(function()
                 if typeof(http_request) == "function" then
                     http_request({
-                        Url = url,
-                        Method = "POST",
-                        Headers = {["Content-Type"] = "application/json"},
-                        Body = body
+                        Url     = url,
+                        Method  = "POST",
+                        Headers = { ["Content-Type"] = "application/json" },
+                        Body    = body
                     })
                 else
                     HttpService:PostAsync(url, body, Enum.HttpContentType.ApplicationJson)
                 end
             end)
             if success then break end
+            task.wait(1)
         end
     end)
 end
 
--- gửi thông tin lobby
 local function sendLobbyInfo()
     task.spawn(function()
-        -- Đợi TowerBar load xong
-        local gui = LocalPlayer:WaitForChild("PlayerGui", 10)
-        if gui then
-            local debug = gui:FindFirstChild("Debug")
-            local clientLabel = debug and debug:FindFirstChild("client")
-            if clientLabel then
-                local startTime = tick()
-                while clientLabel.Visible and clientLabel.Text == "Loading TowerBar" do
-                    task.wait(0.1)
-                    if tick() - startTime > 30 then break end
-                end
-                task.wait(0.5)
+        local attempts = 0
+        repeat
+            task.wait(1)
+            attempts = attempts + 1
+        until safeGetData("Gold") ~= nil or attempts > 30
+
+        local dWins      = safeGetData("Wins")      or 0
+        local dGold      = safeGetData("Gold")      or 0
+        local dCrystals  = safeGetData("Crystals")  or 0
+        local dCookies   = safeGetData("Cookies")   or 0
+        local dEnvelopes = safeGetData("Envelopes") or 0
+
+        local guiLevel = "N/A"
+        local ls = LocalPlayer:FindFirstChild("leaderstats")
+        if ls and ls:FindFirstChild("Level") then
+            guiLevel = ls.Level.Value
+        end
+
+        local inventory    = safeGetData("Inventory") or {}
+        local powerUpsData = inventory.PowerUps or {}
+
+        local powerupList = {}
+        for name, amount in pairs(powerUpsData) do
+            if type(amount) == "number" and amount > 0 then
+                table.insert(powerupList, name .. " x" .. amount)
             end
         end
-        
-        if gui then
-            local mainGUI = gui:FindFirstChild("GUI")
-            local currencyDisplay = mainGUI and mainGUI:FindFirstChild("CurrencyDisplay")
-            local goldDisplay = currencyDisplay and currencyDisplay:FindFirstChild("GoldDisplay")
-            local goldText = goldDisplay and goldDisplay:FindFirstChild("ValueText")
-            local crystalDisplay = currencyDisplay and currencyDisplay:FindFirstChild("CrystalsDisplay")
-            local crystalText = crystalDisplay and crystalDisplay:FindFirstChild("ValueText")
+        table.sort(powerupList)
 
-            local stats = {
-                Level = LocalPlayer:FindFirstChild("leaderstats") and LocalPlayer.leaderstats:FindFirstChild("Level") and LocalPlayer.leaderstats.Level.Value or "N/A",
-                Wins = LocalPlayer:FindFirstChild("leaderstats") and LocalPlayer.leaderstats:FindFirstChild("Wins") and LocalPlayer.leaderstats.Wins.Value or "N/A",
-                Gold = goldText and goldText:IsA("TextLabel") and goldText.Text or "N/A",
-                Crystal = crystalText and crystalText:IsA("TextLabel") and crystalText.Text or "N/A"
-            }
-
-            sendToWebhook({type = "lobby", stats = stats})
-
-            local success, result = pcall(function()
-                local ReplicatedStorage = game:GetService("ReplicatedStorage")
-                local Data = require(ReplicatedStorage:WaitForChild("TDX_Shared"):WaitForChild("Client"):WaitForChild("Services"):WaitForChild("Data"))
-                local ShopData = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ShopDataV2"))
-
-                local inventory = Data.Get("Inventory")
-                local ownedTowers = inventory.Towers or {}
-                local ownedPowerUps = inventory.PowerUps or {}
-                local allTowers = ShopData.Items.Towers
-
-                local towerList = {}
-                if getgenv().webhookConfig and getgenv().webhookConfig.logInventory then
-                    for id, data in pairs(allTowers) do
-                        if ownedTowers[id] then
-                            table.insert(towerList, data.ViewportName or tostring(id))
-                        end
-                    end
+        local towerList = {}
+        local config = getgenv().webhookConfig or {}
+        if config.logInventory then
+            local ownedTowers = inventory.Towers or {}
+            for towerName, isOwned in pairs(ownedTowers) do
+                if isOwned then
+                    table.insert(towerList, tostring(towerName))
                 end
-
-                local powerupList = {}
-                for id, amount in pairs(ownedPowerUps) do
-                    if type(amount) == "number" and amount > 0 then
-                        table.insert(powerupList, id .. " x" .. tostring(amount))
-                    end
-                end
-
-                local statsData = {
-                    PowerUps = table.concat(powerupList, ", ")
-                }
-
-                if #towerList > 0 then
-                    statsData.Towers = table.concat(towerList, ", ")
-                end
-
-                sendToWebhook({type = "lobby", stats = statsData})
-            end)
+            end
+            table.sort(towerList)
         end
+
+        local stats = {
+            Level     = tostring(guiLevel),
+            Wins      = tostring(dWins),
+            Gold      = tostring(math.floor(dGold)),
+            Crystals  = tostring(math.floor(dCrystals)),
+            Cookies   = tostring(math.floor(dCookies)),
+            Envelopes = tostring(math.floor(dEnvelopes)),
+            PowerUps  = #powerupList > 0 and table.concat(powerupList, ", ") or "None",
+        }
+
+        if #towerList > 0 then
+            stats.Towers = table.concat(towerList, ", ")
+        end
+
+        sendToWebhook({ type = "lobby", stats = stats })
     end)
 end
 
--- loop kiểm tra gold + crystal
 local function loopCheckLobbyCurrency()
-    local config = getgenv().webhookConfig or {}
-    local TARGET_GOLD = config.targetGold
+    local config         = getgenv().webhookConfig or {}
+    local TARGET_GOLD    = config.targetGold
     local TARGET_CRYSTAL = config.targetCrystal
-    local ENABLE_KICK = TARGET_GOLD or TARGET_CRYSTAL
+
+    if not TARGET_GOLD and not TARGET_CRYSTAL then return end
 
     task.spawn(function()
         while true do
-            local gui = LocalPlayer:FindFirstChild("PlayerGui")
-            if gui then
-                local mainGUI = gui:FindFirstChild("GUI")
-                local currencyDisplay = mainGUI and mainGUI:FindFirstChild("CurrencyDisplay")
-                local goldDisplay = currencyDisplay and currencyDisplay:FindFirstChild("GoldDisplay")
-                local crystalDisplay = currencyDisplay and currencyDisplay:FindFirstChild("CrystalsDisplay")
-                local goldAmount = goldDisplay and goldDisplay:FindFirstChild("ValueText") and tonumber(goldDisplay.ValueText.Text:gsub("[,%$]", "")) or 0
-                local crystalAmount = crystalDisplay and crystalDisplay:FindFirstChild("ValueText") and tonumber(crystalDisplay.ValueText.Text:gsub("[,%$]", "")) or 0
+            task.wait(5)
 
-                if TARGET_GOLD and goldAmount >= TARGET_GOLD then
-                    sendToWebhook({type = "lobby", stats = {message = "đã đạt vàng mục tiêu", Gold = tostring(goldAmount), Player = LocalPlayer.Name}})
-                    if ENABLE_KICK then LocalPlayer:Kick("đã đạt " .. goldAmount .. " vàng") end
-                    break
-                end
+            local currentGold     = safeGetData("Gold")     or 0
+            local currentCrystals = safeGetData("Crystals") or 0
 
-                if TARGET_CRYSTAL and crystalAmount >= TARGET_CRYSTAL then
-                    sendToWebhook({type = "lobby", stats = {message = "đã đạt crystal mục tiêu", Crystal = tostring(crystalAmount), Player = LocalPlayer.Name}})
-                    if ENABLE_KICK then LocalPlayer:Kick("đã đạt " .. crystalAmount .. " crystal") end
-                    break
-                end
+            if TARGET_GOLD and currentGold >= TARGET_GOLD then
+                sendToWebhook({
+                    type  = "lobby",
+                    stats = { message = "Target Gold Reached", Gold = tostring(currentGold) }
+                })
+                task.wait(2)
+                LocalPlayer:Kick("Reached Gold Target: " .. currentGold)
+                break
             end
-            task.wait(0.25)
+
+            if TARGET_CRYSTAL and currentCrystals >= TARGET_CRYSTAL then
+                sendToWebhook({
+                    type  = "lobby",
+                    stats = { message = "Target Crystal Reached", Crystals = tostring(currentCrystals) }
+                })
+                task.wait(2)
+                LocalPlayer:Kick("Reached Crystal Target: " .. currentCrystals)
+                break
+            end
         end
     end)
 end
 
--- hook reward game
 local function hookGameReward()
     task.spawn(function()
         local handler
-        local ok = pcall(function()
-            handler = require(LocalPlayer.PlayerScripts.Client.UserInterfaceHandler:WaitForChild("GameOverScreenHandler"))
+        local success = pcall(function()
+            handler = require(
+                LocalPlayer.PlayerScripts.Client.UserInterfaceHandler
+                    :WaitForChild("GameOverScreenHandler")
+            )
         end)
-        if not ok or not handler then return end
 
-        local old = handler.DisplayScreen
-        handler.DisplayScreen = function(data)
+        if not success or not handler then return end
+
+        local oldDisplay = handler.DisplayScreen
+        handler.DisplayScreen = function(p_u_115)
             task.spawn(function()
-                local name = LocalPlayer.Name
-                local result = {
-                    type = "game",
-                    rewards = {
-                        Map = data.MapName or "Unknown",
-                        Mode = tostring(data.Difficulty or "Unknown"),
-                        Result = data.Victory and "Victory" or "Defeat",
-                        Wave = data.LastPassedWave and tostring(data.LastPassedWave) or "N/A",
-                        Time = formatTime(data.TimeElapsed),
-                        Gold = tostring((data.PlayerNameToGoldMap and data.PlayerNameToGoldMap[name]) or 0),
-                        Crystals = tostring((data.PlayerNameToCrystalsMap and data.PlayerNameToCrystalsMap[name]) or 0),
-                        Tokens = tostring((data.PlayerNameToTokensMap and data.PlayerNameToTokensMap[name]) or 0),
-                        XP = tostring((data.PlayerNameToXPMap and data.PlayerNameToXPMap[name]) or 0),
-                        PowerUps = {}
-                    }
-                }
-                local powerups = (data.PlayerNameToPowerUpsRewardedMapMap or {})[name] or {}
-                for id, count in pairs(powerups) do
-                    table.insert(result.rewards.PowerUps, id .. " x" .. tostring(count or 1))
+                local pName = LocalPlayer.Name
+
+                local function getVal(map)
+                    if not map then return nil end
+                    local val = map[pName]
+                    if type(val) == "number" and val > 0 then
+                        return tostring(val)
+                    end
+                    return nil
                 end
-                sendToWebhook(result)
+
+                local rewards = {
+                    Map       = p_u_115.MapName or "Unknown",
+                    Mode      = tostring(p_u_115.Difficulty or "Unknown"),
+                    Result    = p_u_115.Victory and "Victory" or "Defeat",
+                    Wave      = p_u_115.LastPassedWave and tostring(p_u_115.LastPassedWave) or "N/A",
+                    Time      = formatTime(p_u_115.TimeElapsed),
+                    Gold      = getVal(p_u_115.PlayerNameToGoldMap),
+                    Crystals  = getVal(p_u_115.PlayerNameToCrystalsMap),
+                    Cookies   = getVal(p_u_115.PlayerNameToCookiesMap),
+                    Envelopes = getVal(p_u_115.PlayerNameToEnvelopesMap),
+                    Tokens    = getVal(p_u_115.PlayerNameToTokensMap),
+                    XP        = getVal(p_u_115.PlayerNameToXPMap),
+                }
+
+                local puMap  = (p_u_115.PlayerNameToPowerUpsRewardedMapMap or {})[pName] or {}
+                local puList = {}
+                for id, count in pairs(puMap) do
+                    if type(count) == "number" and count > 0 then
+                        table.insert(puList, id .. " x" .. count)
+                    end
+                end
+                if #puList > 0 then
+                    rewards.PowerUps = table.concat(puList, ", ")
+                end
+
+                local towerRewards = (p_u_115.PlayerNameToTowerRewardMap or {})[pName] or {}
+                if #towerRewards > 0 then
+                    rewards.NewTowers = table.concat(towerRewards, ", ")
+                end
+
+                sendToWebhook({ type = "game", rewards = rewards })
             end)
-            return old(data)
+
+            return oldDisplay(p_u_115)
         end
     end)
 end
 
--- check đang ở lobby
-local function isLobby()
-    local gui = LocalPlayer:FindFirstChild("PlayerGui")
-    return gui and gui:FindFirstChild("GUI") and gui.GUI:FindFirstChild("CurrencyDisplay") ~= nil
-end
-
--- main
-if isLobby() then
+if game.PlaceId == LOBBY_PLACE_ID then
     sendLobbyInfo()
     loopCheckLobbyCurrency()
 else
