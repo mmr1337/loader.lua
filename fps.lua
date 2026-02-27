@@ -1,137 +1,145 @@
-local REMOVAL_LEVEL = 2
-
 task.wait(1)
 
+local CONFIG_LEVEL = 1
+
 pcall(function()
-    local Players = game:GetService("Players")
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
-    local PlayerScripts = Players.LocalPlayer:WaitForChild("PlayerScripts")
-    local GameClass = PlayerScripts.Client:WaitForChild("GameClass")
+    local PlayerScripts = game:GetService("Players").LocalPlayer:WaitForChild("PlayerScripts")
+    local Client = PlayerScripts:WaitForChild("Client")
+    local GameClass = Client:WaitForChild("GameClass")
+    local UserInterfaceHandler = Client:WaitForChild("UserInterfaceHandler")
+    local TDX_Shared = ReplicatedStorage:WaitForChild("TDX_Shared")
+    local Common = TDX_Shared:WaitForChild("Common")
+    local Wrappers = Common:WaitForChild("Wrappers")
+    local BaseClasses = GameClass:WaitForChild("BaseClasses")
+    local CharacterClass = require(BaseClasses:WaitForChild("CharacterClass"))
 
-    local TowerClass = require(GameClass:WaitForChild("TowerClass"))
-    local EnemyClass = require(GameClass:WaitForChild("EnemyClass"))
-    local PathEntityClass = require(GameClass:WaitForChild("PathEntityClass"))
     local ProjectileHandler = require(GameClass:WaitForChild("ProjectileHandler"))
-    local DropCoinsHandler = require(GameClass:WaitForChild("DropCoinsHandler"))
-    local VisualEffectHandler = require(GameClass:WaitForChild("VisualEffectHandler"))
-    local VisualSequenceHandler = require(GameClass:WaitForChild("VisualSequenceHandler"))
-    local NetworkingHandler = require(ReplicatedStorage:WaitForChild("TDX_Shared"):WaitForChild("Common"):WaitForChild("NetworkingHandler"))
+    local TowerClass = require(GameClass:WaitForChild("TowerClass"))
 
-    VisualEffectHandler.NewVisualEffect = function() return end
-    VisualSequenceHandler.StartNewSequence = function() return end
-    if DropCoinsHandler then DropCoinsHandler.DropCoins = function() return end end
+    pcall(function()
+        local originalNewProjectile = ProjectileHandler.NewProjectile
+        ProjectileHandler.NewProjectile = function(packet)
+            local shouldRender = false
+            if packet and packet.OriginEntityClass == "Tower" then
+                local tower = TowerClass.GetTower(packet.OriginHash)
+                if tower then
+                    if tostring(tower.Type) == "Combat Drone" or tostring(tower.Name) == "Combat Drone" then
+                        shouldRender = true
+                    end
+                end
+            end
+            if shouldRender then
+                return originalNewProjectile(packet)
+            end
+            return {}
+        end
+    end)
 
-    local originalNewProjectile = ProjectileHandler.NewProjectile
-    ProjectileHandler.NewProjectile = function(...)
-        local realProjectiles = originalNewProjectile(...)
-        if realProjectiles then
-            for _, proj in ipairs(realProjectiles) do
-                task.spawn(function()
-                    if not proj or not proj.Model then return end
-                    local function stripFX(instance)
-                        if instance:IsA("ParticleEmitter") or instance:IsA("Beam") or instance:IsA("Trail") or instance:IsA("Light") then
-                            instance.Enabled = false
+    pcall(function()
+        if UserInterfaceHandler and UserInterfaceHandler.TowerUIHandler then
+            local UpgradeHoverHandler = require(
+                UserInterfaceHandler.TowerUIHandler:WaitForChild("UpgradeHoverHandler")
+            )
+            if UpgradeHoverHandler and UpgradeHoverHandler.UpgradeHovered then
+                local originalUpgradeHovered = UpgradeHoverHandler.UpgradeHovered
+                UpgradeHoverHandler.UpgradeHovered = function(...)
+                    pcall(originalUpgradeHovered, ...)
+                end
+            end
+        end
+    end)
+
+    pcall(function()
+        CharacterClass.ExplodeParts = function() end
+
+        local DeathEffectHandler = require(CharacterClass:WaitForChild("DeathEffectHandler"))
+        DeathEffectHandler.NewDeathEffect = function() end
+
+        local EnemyClass = require(GameClass:WaitForChild("EnemyClass"))
+        local originalEnemyNew = EnemyClass.New
+
+        EnemyClass.New = function(...)
+            local newEnemy = originalEnemyNew(...)
+            if newEnemy and newEnemy.CustomCode and newEnemy.CustomCode.Initialize then
+                local originalInitialize = newEnemy.CustomCode.Initialize
+                newEnemy.CustomCode.Initialize = function(self, ...)
+                    originalInitialize(self, ...)
+                    if self._TimingHelpers then
+                        for name, helper in pairs(self._TimingHelpers) do
+                            if string.find(name, "Death") then
+                                if helper and helper.Config then
+                                    helper.Config.Callback = function() end
+                                end
+                            end
                         end
                     end
-                    for _, d in ipairs(proj.Model:GetDescendants()) do stripFX(d) end
-                    proj.Model.DescendantAdded:Connect(stripFX)
-                end)
-            end
-        end
-        return realProjectiles
-    end
-
-    local function disableModelFX(instance)
-        if not instance or not instance.Parent then return end
-        local cn = instance.ClassName
-        if cn == "ParticleEmitter" or cn == "Beam" or cn == "Trail" or cn == "PointLight" or cn == "SpotLight" then
-            instance.Enabled = false
-            if instance:IsA("Light") then instance.Brightness = 0 end
-        end
-    end
-
-    local function disableTowerFX(instance)
-        if not instance or not instance.Parent then return end
-        if string.find(instance.Name, "Ring", 1, true) or (instance.Parent and string.find(instance.Parent.Name, "Ring", 1, true)) then return end
-        disableModelFX(instance)
-    end
-
-    local function processTower(tower)
-        if tower and tower.Character and tower.Character.CharacterModel then
-            local charModel = tower.Character.CharacterModel
-            tower.Character.Attacked = function() return end
-            tower.Character.RunDefaultBeamEffects = function() return end
-            for _, v in ipairs(charModel:GetDescendants()) do disableTowerFX(v) end
-            charModel.DescendantAdded:Connect(disableTowerFX)
-            if REMOVAL_LEVEL >= 2 then
-                if tower.SetAnimationState then
-                    local oldSetAnim = tower.SetAnimationState
-                    tower.SetAnimationState = function(self, state, force)
-                        if string.find(tostring(state), "Attack", 1, true) then return end
-                        pcall(oldSetAnim, self, state, force)
+                    if self._DeathTimingHelpers then
+                        for _, helper in pairs(self._DeathTimingHelpers) do
+                            if helper and helper.Config then
+                                helper.Config.Callback = function() end
+                            end
+                        end
                     end
                 end
             end
+            return newEnemy
         end
-    end
+    end)
 
-    local function processGenericEntity(entity)
-        if entity and entity.Character and entity.Character.CharacterModel then
-            local charModel = entity.Character.CharacterModel
-            for _, v in ipairs(charModel:GetDescendants()) do disableModelFX(v) end
-            charModel.DescendantAdded:Connect(disableModelFX)
-            if REMOVAL_LEVEL >= 2 then
-                if entity.SetAnimationState then
-                    local oldSetAnim = entity.SetAnimationState
-                    entity.SetAnimationState = function(self, state, force)
-                        if state == "Attack" or state == "Spawn" then return end
-                        pcall(oldSetAnim, self, state, force)
-                    end
-                end
-                if entity._Attacked then
-                    entity._Attacked = function() return end
+    if CONFIG_LEVEL >= 1 then
+        pcall(function()
+            local VisualEffectHandler = require(GameClass:WaitForChild("VisualEffectHandler"))
+            local VisualSequenceHandler = require(GameClass:WaitForChild("VisualSequenceHandler"))
+            local DropCoinsHandler = require(GameClass:WaitForChild("DropCoinsHandler"))
+
+            VisualEffectHandler.NewVisualEffect = function() end
+            VisualSequenceHandler.StartNewSequence = function() end
+            if DropCoinsHandler then
+                DropCoinsHandler.DropCoins = function() end
+            end
+        end)
+
+        pcall(function()
+            local EmitterWrapper = require(Wrappers:WaitForChild("EmitterWrapperClass"))
+            EmitterWrapper.PlayTriggered = function() end
+            EmitterWrapper.PlayContinuous = function() end
+            EmitterWrapper.PlayAll = function() end
+            EmitterWrapper.PlayKeyframeTriggered = function() end
+        end)
+
+        pcall(function()
+            local NetworkingHandler = require(Common:WaitForChild("NetworkingHandler"))
+            local function disableEvent(eventName)
+                local event = NetworkingHandler:GetEvent(eventName)
+                if event and event.AttachCallback then
+                    event:AttachCallback(function() end)
                 end
             end
-        end
+            disableEvent("NewBurnEffect")
+            disableEvent("RemoveBurnEffect")
+            disableEvent("EnemiesBurningUpdate")
+            disableEvent("NewVisualEffect")
+        end)
     end
 
-    if TowerClass and TowerClass.GetTowers then
-        for _, t in pairs(TowerClass.GetTowers()) do task.spawn(processTower, t) end
-    end
-    local oldTowerNew = TowerClass.New
-    TowerClass.New = function(...)
-        local t = oldTowerNew(...)
-        if t then task.spawn(processTower, t) end
-        return t
-    end
+    if CONFIG_LEVEL >= 2 then
+        pcall(function()
+            local SoundWrapper = require(Wrappers:WaitForChild("SoundWrapperClass"))
+            SoundWrapper.PlayTriggered = function() end
+            SoundWrapper.PlayContinuous = function() end
+            SoundWrapper.PlayAll = function() end
+            SoundWrapper.PlayKeyframeTriggered = function() end
+        end)
 
-    if EnemyClass and EnemyClass.GetEnemies then
-        for _, e in pairs(EnemyClass.GetEnemies()) do task.spawn(processGenericEntity, e) end
+        pcall(function()
+            local originalSetAnimationState = CharacterClass.SetAnimationState
+            CharacterClass.SetAnimationState = function(self, state, ...)
+                if state and (string.find(tostring(state), "Attack") or tostring(state) == "Spawn") then
+                    return
+                end
+                pcall(originalSetAnimationState, self, state, ...)
+            end
+        end)
     end
-    local oldEnemyNew = EnemyClass.New
-    EnemyClass.New = function(...)
-        local e = oldEnemyNew(...)
-        if e then task.spawn(processGenericEntity, e) end
-        return e
-    end
-
-    if PathEntityClass and PathEntityClass.GetPathEntities then
-        for _, p in pairs(PathEntityClass.GetPathEntities()) do task.spawn(processGenericEntity, p) end
-    end
-    local oldPathEntityNew = PathEntityClass.New
-    PathEntityClass.New = function(...)
-        local p = oldPathEntityNew(...)
-        if p then task.spawn(processGenericEntity, p) end
-        return p
-    end
-
-    local function disableEvent(eventName)
-        local event = NetworkingHandler:GetEvent(eventName)
-        if event and event.AttachCallback then
-            event:AttachCallback(function() end)
-        end
-    end
-
-    disableEvent("RemoveBurnEffect")
-    disableEvent("EnemiesBurningUpdate")
 end)
