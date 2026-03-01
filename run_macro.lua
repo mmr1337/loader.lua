@@ -47,7 +47,11 @@ local defaultConfig = {
     ["AllowParallelTargets"] = false,
     ["AllowParallelSkips"] = true,
     ["UseThreadedRemotes"] = true,
-    ["ShopInstantMode"] = true
+    ["ShopInstantMode"] = true,
+    -- Timing-based execution (wait for recorded wave/time before acting)
+    ["PlaceByTiming"] = false,
+    ["UpgradeByTiming"] = false,
+    ["SellByTiming"] = true,
 }
 
 globalEnv.TDX_Config = globalEnv.TDX_Config or {}
@@ -57,7 +61,7 @@ end
 
 local function safeReadFile(path) return (isfile and readfile and pcall(readfile, path)) and readfile(path) or nil end
 local function safeIsFile(path) return (isfile and pcall(isfile, path)) and isfile(path) or false end
-local GameModules = { Networking = nil, LevelUtils = nil, TowerClass = nil, ShopUtils = nil }
+local GameModules = { Networking = nil, LevelUtils = nil, TowerClass = nil, ShopUtils = nil, PowerUpsConfig = nil }
 
 local function InitializeModules()
     local Common = ReplicatedStorage:WaitForChild("TDX_Shared"):WaitForChild("Common")
@@ -74,6 +78,9 @@ local function InitializeModules()
     GameModules.Networking = RequireSafe(Common:WaitForChild("NetworkingHandler"))
     GameModules.LevelUtils = RequireSafe(Common:WaitForChild("LevelHandlerUtilities"))
     GameModules.ShopUtils = RequireSafe(Common:WaitForChild("TowerUpgradeShopUtilities"))
+    pcall(function()
+        GameModules.PowerUpsConfig = require(Common.Resources.Misc.PowerUpsConfigHandler)
+    end)
 
     local Client = PlayerScripts:WaitForChild("Client")
     local GameClass = Client:FindFirstChild("GameClass")
@@ -84,6 +91,66 @@ local function InitializeModules()
     if not GameModules.TowerClass then error("Failed to load TowerClass") end
 end
 InitializeModules()
+
+-- PowerUp state tracking
+local PowerUpState = {
+    Inventory  = {},  -- { [puName] = count }
+    UsageStats = {},  -- { [puName] = NumUsed } — for MaxUses check
+}
+
+pcall(function()
+    local Common = ReplicatedStorage:WaitForChild("TDX_Shared"):WaitForChild("Common")
+    local bh = require(Common:WaitForChild("BindableHandler"))
+    bh.GetEvent("PowerUpStatsChanged"):AttachCallback(function(stats)
+        for name, data in pairs(stats) do
+            PowerUpState.UsageStats[name] = data.NumUsed or 0
+        end
+    end)
+end)
+
+pcall(function()
+    local Data = require(ReplicatedStorage:WaitForChild("TDX_Shared").Client.Services.Data)
+    local function applyInventory(inv)
+        if inv and inv.PowerUps then
+            for name, count in pairs(inv.PowerUps) do
+                PowerUpState.Inventory[name] = count
+            end
+        end
+    end
+    applyInventory(Data.Get("Inventory"))
+    Data.Updated:Connect(function(key)
+        if key == "Inventory" then applyInventory(Data.Get("Inventory")) end
+    end)
+end)
+
+local function CanUsePowerUp(puName)
+    -- Inventory = 0: bail, không thể dùng
+    if (PowerUpState.Inventory[puName] or 0) <= 0 then return false, "NoCount" end
+    if GameModules.PowerUpsConfig then
+        local ok, cfg = pcall(function() return GameModules.PowerUpsConfig.GetConfig(puName) end)
+        if ok and cfg then
+            if cfg.Disabled == true then return false, "Disabled" end
+            if cfg.MinWave and PowerUpState.CurrentWave < cfg.MinWave then return false, "WaveRequirementNotReached" end
+            if cfg.BossOnly == true and PowerUpState.BossCount == 0 then return false, "NoBosses" end
+            if cfg.MaxUses and (PowerUpState.UsageStats[puName] or 0) >= cfg.MaxUses then return false, "NoUsesRemaining" end
+        end
+    end
+    return true
+end
+
+local function WaitUntilPowerUpReady(puName, timeout)
+    timeout = timeout or 30
+    local t0 = tick()
+    while tick() - t0 < timeout do
+        local ok, reason = CanUsePowerUp(puName)
+        if ok then return true end
+        -- Chỉ bail khi inventory = 0 hoặc đã hết lượt dùng tối đa
+        if reason == "NoCount" or reason == "NoUsesRemaining" then return false, reason end
+        RunService.RenderStepped:Wait()
+    end
+    return false, "Timeout"
+end
+
 local NetEvents = {}
 local RequiredEvents = {"NewCoinDropEvent", "ClientsideCoinCollectedStartedEvent", "ClientsideCoinCollectedEvent"}
 for _, name in ipairs(RequiredEvents) do NetEvents[name] = GameModules.Networking.GetEvent(name) end
@@ -94,7 +161,7 @@ NetEvents.NewCoinDropEvent:AttachCallback(function(args)
     if serverHash then
         task.spawn(function()
             task.wait(0.2)
-            
+
             if walkNear then 
                 NetEvents.ClientsideCoinCollectedStartedEvent:FireServer(serverHash) 
             end
@@ -157,6 +224,27 @@ end
 local function convertToTimeFormat(num) return string.format("%02d:%02d", math.floor(num / 100), num % 100) end
 local function parseTimeToNumber(s) local m,sec = s:match("(%d+):(%d+)"); return m and (tonumber(m)*100 + tonumber(sec)) or nil end
 
+-- Wait until recorded Wave/Time is reached. gameUI must be passed.
+-- Wave is matched exactly; Time waits until game time <= recorded time (countdown timer).
+local function WaitForTiming(entry, gameUI)
+    if not entry.Wave and not entry.Time then return end
+    while true do
+        local ok, waveText, timeText = pcall(function()
+            return gameUI.waveText.Text, gameUI.timeText.Text
+        end)
+        if ok then
+            local waveMatch = (not entry.Wave) or (waveText == tostring(entry.Wave))
+            local timeMatch = true
+            if entry.Time then
+                local current = parseTimeToNumber(timeText)
+                timeMatch = current and (current <= entry.Time)
+            end
+            if waveMatch and timeMatch then return end
+        end
+        RunService.RenderStepped:Wait()
+    end
+end
+
 local function CalculateUpgradeCost(tower, path, count)
     if not tower or not tower.LevelHandler or count <= 0 then return nil end
     local lh = tower.LevelHandler
@@ -180,7 +268,7 @@ end
 local function UpgradeTowerRetry(axisValue, path, count)
     local ctx = CreateTowerContext(axisValue)
     count = count or 1
-    
+
     local t0 = tick()
     while tick() - t0 < 5 do if UpdateContext(ctx) then break end; RunService.RenderStepped:Wait() end
     if not ctx.hash then return false end
@@ -197,7 +285,7 @@ local function UpgradeTowerRetry(axisValue, path, count)
         local upgradesNeeded = targetLevel - currentLevel
         local currentCash = cashStat.Value
         local amountToBuy = 0
-        
+
         for k = upgradesNeeded, 1, -1 do
             local cost = CalculateUpgradeCost(ctx.tower, path, k)
             if cost and currentCash >= cost then amountToBuy = k; break end
@@ -211,7 +299,7 @@ local function UpgradeTowerRetry(axisValue, path, count)
         if amountToBuy > 0 then
             if globalEnv.TDX_Config.UseThreadedRemotes then SafeRemoteCall("FireServer", Remotes.TowerUpgradeRequest, ctx.hash, path, amountToBuy)  
             else pcall(function() Remotes.TowerUpgradeRequest:FireServer(ctx.hash, path, amountToBuy) end) end 
-            
+
             local t0 = tick()
             local expected = currentLevel + amountToBuy
             while tick() - t0 < 2 do
@@ -395,10 +483,10 @@ local function GetShopDataHandler()
     local ok, result = pcall(function()
         local Client = PlayerScripts:WaitForChild("Client", 5)
         if not Client then return nil end
-        
+
         local PlayerClassModule = Client:FindFirstChild("PlayerClass")
         if not PlayerClassModule then return nil end
-        
+
         local PlayerClass = require(PlayerClassModule)
         local playerWrapper = PlayerClass.GetLocalPlayerWrapper()
         if playerWrapper then
@@ -418,10 +506,10 @@ end
 
 local function CalculateShopUpgradeCost(towerType, statType)
     if not GameModules.ShopUtils then return nil end
-    
+
     local itemData = GameModules.ShopUtils.GetUpgradeShopItemDataForTower(towerType, statType)
     if not itemData then return nil end
-    
+
     local handler = GetShopDataHandler()
     if handler then
         local activeData = GameModules.ShopUtils.GetActiveUpgradeShopData(
@@ -429,12 +517,12 @@ local function CalculateShopUpgradeCost(towerType, statType)
             towerType,
             statType
         )
-        
+
         if activeData and itemData then
             return GameModules.ShopUtils.GetOperationCost(activeData, itemData)
         end
     end
-    
+
     return nil
 end
 
@@ -452,7 +540,7 @@ local function ExecuteShopItem(item, gameUI)
 
     if item.ShopUpgrade and not isExtra then
         local cost = CalculateShopUpgradeCost(item.ShopUpgrade, item.Stat)
-        
+
         if cost then
             if forceInstant then
                 WaitForCredits(cost)
@@ -469,11 +557,11 @@ local function ExecuteShopItem(item, gameUI)
             local s, waveText, timeText = pcall(function() 
                 return gameUI.waveText.Text, gameUI.timeText.Text 
             end)
-            
+
             if s then
                 local waveMatch = (not item.Wave or item.Wave == waveText)
                 local timeMatch = (not item.Time or timeText == convertToTimeFormat(item.Time))
-                
+
                 if waveMatch and timeMatch then 
                     if item.ShopUpgrade and not isExtra then
                         local cost = CalculateShopUpgradeCost(item.ShopUpgrade, item.Stat)
@@ -517,16 +605,16 @@ local function ExecuteShopItem(item, gameUI)
                 pcall(function() t:FireServer(item.ShopRefund) end) 
             end
         end
-        
+
         local t0 = tick()
         while tick() - t0 < 5 do
             if confirmed then break end
             RunService.RenderStepped:Wait()
         end
-        
+
         if not confirmed then break end
     end
-    
+
     if connection then connection:Disconnect() end
 end
 
@@ -545,7 +633,7 @@ local function StartUnifiedMonitor(monitorEntries, gameUI)
         if entry.SkipWave then
             return not attemptedSkips[entry.SkipWave] and entry.SkipWave == wave and (not entry.SkipWhen or (parseTimeToNumber(time) or 9999) <= entry.SkipWhen)
         elseif entry.TowerTargetChange or entry.towermoving then
-             return (not entry.TargetWave or entry.TargetWave == wave) and (not entry.TargetChangedAt or time == convertToTimeFormat(entry.TargetChangedAt))
+            return (not entry.Wave or entry.Wave == wave) and (not entry.Time or time == convertToTimeFormat(entry.Time))
                    and (not entry.wave or entry.wave == wave) and (not entry.time or time == convertToTimeFormat(entry.time))
         end
         return false
@@ -591,7 +679,7 @@ local function RunMacroRunner()
     local macro = HttpService:JSONDecode(safeReadFile(macroPath))
     local gameUI = getGameUI()
     local towerRecords, monitorEntries = {}, {}
-    
+
     local activeReliveConfig, activeReshieldConfig = nil, nil  
     local rebuildSystemActive, skipTypesMap = false, {}
 
@@ -649,7 +737,7 @@ local function RunMacroRunner()
     local i = 1
     while i <= #mainMacro do
         local entry = mainMacro[i]
-        
+
         if entry.SuperFunction == "sell_all" then SellAllTowers(entry.Skip)
         elseif entry.SuperFunction == "rebuild" then
             if not rebuildSystemActive then
@@ -659,8 +747,9 @@ local function RunMacroRunner()
             end
         elseif entry.SuperFunction == "relive" then activeReliveConfig = entry
         elseif entry.SuperFunction == "reshield" then activeReshieldConfig = entry
-        
+
         elseif entry.TowerPlaced and entry.TowerVector then
+             if globalEnv.TDX_Config.PlaceByTiming then WaitForTiming(entry, gameUI) end
              local v = {}; for c in entry.TowerVector:gmatch("[^,%s]+") do table.insert(v, tonumber(c)) end
              local pos = Vector3.new(v[1], v[2], v[3])
              local args = {tonumber(entry.TowerA1), entry.TowerPlaced, pos, tonumber(entry.Rotation or 0)}
@@ -668,6 +757,7 @@ local function RunMacroRunner()
              PlaceTowerRetry(args, pos.X)
              towerRecords[pos.X] = towerRecords[pos.X] or {}; table.insert(towerRecords[pos.X], { line = i, entry = entry })
         elseif entry.TowerUpgraded then
+             if globalEnv.TDX_Config.UpgradeByTiming then WaitForTiming(entry, gameUI) end
              local axis, path = tonumber(entry.TowerUpgraded), entry.UpgradePath
              local batchCount, j = 1, i + 1
              while j <= #mainMacro do
@@ -686,8 +776,23 @@ local function RunMacroRunner()
              local axis = entry.towermoving
              table.insert(towerRecords[axis] or {}, { line = i, entry = entry })
         elseif entry.SellTower then
+             if globalEnv.TDX_Config.SellByTiming then WaitForTiming(entry, gameUI) end
              SellTowerRetry(tonumber(entry.SellTower))
              towerRecords[tonumber(entry.SellTower)] = nil
+        elseif entry.PowerUp then
+             local Remote = Remotes:FindFirstChild("RequestUsePowerUp")
+             if Remote then
+                 local ready, reason = WaitUntilPowerUpReady(entry.PowerUp)
+                 if ready then
+                     local args = {entry.PowerUp}
+                     if entry.PowerUpVector then
+                         local v = {}; for c in entry.PowerUpVector:gmatch("[^,%s]+") do table.insert(v, tonumber(c)) end
+                         if #v == 3 then table.insert(args, Vector3.new(v[1], v[2], v[3])) end
+                     end
+                     if globalEnv.TDX_Config.UseThreadedRemotes then SafeRemoteCall("InvokeServer", Remote, unpack(args))
+                     else pcall(function() Remote:InvokeServer(unpack(args)) end) end
+                 end
+             end
         end
         SmartWait(globalEnv.TDX_Config.MacroStepDelay)
         i = i + 1
