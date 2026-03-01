@@ -164,10 +164,10 @@ local function getCurrentWaveAndTime()
     if not interface then return nil, nil end
     local gameInfoBar = interface:FindFirstChild("GameInfoBar")
     if not gameInfoBar then return nil, nil end
-    
+
     local default = gameInfoBar:FindFirstChild("Default")
     if not default then return nil, nil end
-    
+
     local waveFrame = default:FindFirstChild("Wave")
     local timerFrame = default:FindFirstChild("TimeLeft")
     local waveText = waveFrame and waveFrame:FindFirstChild("WaveText")
@@ -234,7 +234,8 @@ local function parseMacroLine(line)
     local a1, name, x, y, z, rot = line:match('TDX:placeTower%(([^,]+),%s*([^,]+),%s*Vector3%.new%(([^,]+),%s*([^,]+),%s*([^%)]+)%)%s*,%s*([^%)]+)%)')
     if a1 and name and x and y and z and rot then
         name = tostring(name):gsub('^%s*"(.-)"%s*$', '%1')
-        return {{ TowerPlaceCost = GetTowerPlaceCostByName(name), TowerPlaced = name, TowerVector = string.format("%s, %s, %s", x, y, z), Rotation = rot, TowerA1 = a1 }}
+        local w, t = getCurrentWaveAndTime()
+        return {{ TowerPlaceCost = GetTowerPlaceCostByName(name), TowerPlaced = name, TowerVector = string.format("%s, %s, %s", x, y, z), Rotation = rot, TowerA1 = a1, Wave = w, Time = convertTimeToNumber(t) }}
     end
     local hash, path, upgradeCount = line:match('TDX:upgradeTower%(([^,]+),%s*([^,]+),%s*([^%)]+)%)')
     if hash and path and upgradeCount then
@@ -242,7 +243,8 @@ local function parseMacroLine(line)
         local pathNum, count = tonumber(path), tonumber(upgradeCount)
         if pos and pathNum and count and count > 0 then
             local entries = {}
-            for _ = 1, count do table.insert(entries, { UpgradeCost = 0, UpgradePath = pathNum, TowerUpgraded = pos.x }) end
+            local w, t = getCurrentWaveAndTime()
+            for _ = 1, count do table.insert(entries, { UpgradeCost = 0, UpgradePath = pathNum, TowerUpgraded = pos.x, Wave = w, Time = convertTimeToNumber(t) }) end
             return entries
         end
     end
@@ -251,15 +253,28 @@ local function parseMacroLine(line)
         local pos = HashToPosCache[tostring(hash)]
         if pos then
             local w, t = getCurrentWaveAndTime()
-            return {{ TowerTargetChange = pos.x, TargetWanted = tonumber(targetType), TargetWave = w, TargetChangedAt = convertTimeToNumber(t) }}
+            return {{ TowerTargetChange = pos.x, TargetWanted = tonumber(targetType), Wave = w, Time = convertTimeToNumber(t) }}
         end
+    end
+    -- PowerUp with position
+    local puName, px, py, pz = line:match('TDX:usePowerUp%("([^"]+)",%s*Vector3%.new%(([^,]+),%s*([^,]+),%s*([^%)]+)%)%)')
+    if puName and px and py and pz then
+        local w, t = getCurrentWaveAndTime()
+        return {{ PowerUp = puName, PowerUpVector = string.format("%s, %s, %s", px, py, pz), Wave = w, Time = convertTimeToNumber(t) }}
+    end
+    -- PowerUp without position
+    local puNameOnly = line:match('TDX:usePowerUp%("([^"]+)"%)') 
+    if puNameOnly then
+        local w, t = getCurrentWaveAndTime()
+        return {{ PowerUp = puNameOnly, Wave = w, Time = convertTimeToNumber(t) }}
     end
     local hash = line:match('TDX:sellTower%(([^%)]+)%)')
     if hash then
         local hashStr = tostring(hash)
         local pos = HashToPosCache[hashStr]
         if pos then
-            local entry = { SellTower = pos.x }
+            local w, t = getCurrentWaveAndTime()
+            local entry = { SellTower = pos.x, Wave = w, Time = convertTimeToNumber(t) }
             HashToPosCache[hashStr] = nil
             return {entry}
         end
@@ -332,7 +347,10 @@ ReplicatedStorage.Remotes.TowerUpgradeQueueUpdated.OnClientEvent:Connect(functio
     end
     for _, pd in ipairs(paths) do
         for i=1, pd.c do
-            if not RebuildingCache[pos.x] then appendToJsonFile({UpgradeCost=0, UpgradePath=pd.p, TowerUpgraded=pos.x}) end
+            if not RebuildingCache[pos.x] then
+                local w, t = getCurrentWaveAndTime()
+                appendToJsonFile({UpgradeCost=0, UpgradePath=pd.p, TowerUpgraded=pos.x, Wave=w, Time=convertTimeToNumber(t)})
+            end
         end
     end
     lastKnownLevels[hash] = {new1, new2}
@@ -347,6 +365,13 @@ if UpgradeShopDataUpdate then UpgradeShopDataUpdate.OnClientEvent:Connect(functi
 
 local UpgradeShopTowerReset = ReplicatedStorage.Remotes:FindFirstChild("UpgradeShopTowerReset")
 if UpgradeShopTowerReset then UpgradeShopTowerReset.OnClientEvent:Connect(function(uid) if tostring(uid) == tostring(player.UserId) then tryConfirm("ShopRefund") end end) end
+
+local UpdatePowerUpStats = ReplicatedStorage.Remotes:FindFirstChild("UpdatePowerUpStats")
+if UpdatePowerUpStats then
+    UpdatePowerUpStats.OnClientEvent:Connect(function()
+        tryConfirm("PowerUp")
+    end)
+end
 
 local function handleRemote(name, args)
     if name == "SkipWaveVoteCast" then
@@ -384,6 +409,19 @@ local function handleRemote(name, args)
         setPending("Sell", "TDX:sellTower("..tostring(args[1])..")")
     elseif name == "ChangeQueryType" then
         setPending("Target", string.format("TDX:changeQueryType(%s, %s)", tostring(args[1]), tostring(args[2])))
+    elseif name == "RequestUsePowerUp" then
+        local puName = args[1]
+        local puVec  = args[2]
+        if type(puName) == "string" then
+            local code
+            if typeof(puVec) == "Vector3" then
+                code = string.format('TDX:usePowerUp("%s", Vector3.new(%s, %s, %s))',
+                    puName, tostring(puVec.X), tostring(puVec.Y), tostring(puVec.Z))
+            else
+                code = string.format('TDX:usePowerUp("%s")', puName)
+            end
+            setPending("PowerUp", code)
+        end
     end
 end
 
@@ -617,7 +655,7 @@ RunService.RenderStepped:Connect(function(dt)
     if GameModules.TowerClass.GetTowers then
         local currentTowers = GameModules.TowerClass.GetTowers()
         local existingHashes = {}
-        
+
         for hash, tower in pairs(currentTowers) do
             local pos = GetTowerSpawnPosition(tower)
             if pos then
@@ -626,7 +664,7 @@ RunService.RenderStepped:Connect(function(dt)
                 HashToPosCache[hashStr] = {x = pos.X, y = pos.Y, z = pos.Z}
             end
         end
-        
+
         for hashStr, _ in pairs(HashToPosCache) do
             if not existingHashes[hashStr] then
                 HashToPosCache[hashStr] = nil
@@ -641,7 +679,7 @@ RunService.RenderStepped:Connect(function(dt)
             local item = pendingQueue[i]
             local age = tick() - item.created
             local timeout = (item.type == "ShopUpgrade" or item.type == "ShopRefund") and 15 or 2
-            if (item.type == "MovingSkill" or item.type == "SkipWave") and age > 0.1 then
+            if (item.type == "MovingSkill" or item.type == "SkipWave" or item.type == "PowerUp") and age > 0.1 then
                 processAndWriteAction(item.code)
                 table.remove(pendingQueue, i)
             elseif age > timeout then table.remove(pendingQueue, i) end
