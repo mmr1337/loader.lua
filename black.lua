@@ -1,7 +1,6 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
-local Lighting = game:GetService("Lighting")
 local Terrain = workspace:WaitForChild("Terrain")
 
 local LocalPlayer = Players.LocalPlayer
@@ -9,39 +8,25 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 -- Script Control
 local scriptEnabled = true
-local isRemoving = false
 
 function _G.blackoff()
-    scriptEnabled = false
-    isRemoving = true
-    for _, v in pairs(CoreGui:GetChildren()) do
-        if v:IsA("ScreenGui") and v.DisplayOrder == 2147483647 then
-            pcall(function()
-                v:Destroy()
-            end)
-        end
-    end
+	scriptEnabled = false
+	for _, v in pairs(CoreGui:GetChildren()) do
+		if v:IsA("ScreenGui") and v.DisplayOrder == 2147483647 then
+			pcall(function() v:Destroy() end)
+		end
+	end
 end
 
 function _G.blackon()
-    scriptEnabled = true
+	scriptEnabled = true
 end
-
-pcall(function()
-    LocalPlayer.CameraMaxZoomDistance = 1000
-    Lighting.Technology = Enum.Technology.Compatibility
-    Lighting.GlobalShadows = false
-    Lighting.FogEnd = 100000
-    Terrain.WaterWaveSize = 0
-    Terrain.WaterWaveSpeed = 0
-    Terrain.WaterReflectance = 0
-end)
 
 local enemyModule = nil
 pcall(function()
-    enemyModule = require(LocalPlayer.PlayerScripts:WaitForChild("Client")
-        :WaitForChild("GameClass")
-        :WaitForChild("EnemyClass"))
+	enemyModule = require(LocalPlayer.PlayerScripts:WaitForChild("Client")
+		:WaitForChild("GameClass")
+		:WaitForChild("EnemyClass"))
 end)
 
 local screenGui = Instance.new("ScreenGui")
@@ -60,6 +45,23 @@ blackFrame.BorderSizePixel = 0
 blackFrame.ZIndex = 1
 blackFrame.Active = true
 blackFrame.Parent = screenGui
+
+-- Toggle Button (top-right)
+local toggleButton = Instance.new("TextButton")
+toggleButton.Name = "ToggleBtn"
+toggleButton.Size = UDim2.new(0, 80, 0, 28)
+toggleButton.Position = UDim2.new(1, -90, 0, 10)
+toggleButton.BackgroundColor3 = Color3.fromRGB(0, 170, 80)
+toggleButton.TextColor3 = Color3.new(1, 1, 1)
+toggleButton.Font = Enum.Font.SourceSansBold
+toggleButton.TextSize = 16
+toggleButton.Text = "ON"
+toggleButton.ZIndex = 3
+toggleButton.Parent = screenGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 6)
+corner.Parent = toggleButton
 
 local headerLabel = Instance.new("TextLabel")
 headerLabel.Name = "Header"
@@ -91,142 +93,133 @@ uiListLayout.Padding = UDim.new(0, 2)
 uiListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 uiListLayout.Parent = enemyListFrame
 
-local function kick(englishReason)
-    pcall(function() LocalPlayer:Kick(englishReason or "GUI tampering was detected.") end)
-end
-
-local function protect(instance, propertiesToProtect)
-    local originalProperties = { Parent = instance.Parent }
-    for _, propName in ipairs(propertiesToProtect) do originalProperties[propName] = instance[propName] end
-    instance.AncestryChanged:Connect(function(_, parent)
-        if isRemoving then return end
-        if parent ~= originalProperties.Parent then kick("Reason: Attempted to delete or move a protected GUI element.") end
-    end)
-    for propName, originalValue in pairs(originalProperties) do
-        if propName ~= "Parent" then
-            instance:GetPropertyChangedSignal(propName):Connect(function()
-                if isRemoving then return end
-                if instance[propName] ~= originalValue then kick("Reason: Attempted to modify protected GUI property: " .. propName) end
-            end)
-        end
-    end
-end
-
-protect(screenGui, {"Name", "DisplayOrder", "IgnoreGuiInset", "Enabled"})
-protect(blackFrame, {"Name", "Size", "Position", "BackgroundColor3", "BackgroundTransparency", "Visible", "ZIndex", "Active"})
-protect(headerLabel, {"Name", "Size", "Position", "TextColor3", "Visible", "ZIndex"})
-protect(enemyListFrame, {"Name", "Size", "Position", "Visible", "ZIndex"})
+toggleButton.MouseButton1Click:Connect(function()
+	scriptEnabled = not scriptEnabled
+	if scriptEnabled then
+		toggleButton.Text = "ON"
+		toggleButton.BackgroundColor3 = Color3.fromRGB(0, 170, 80)
+		blackFrame.Visible = true
+		enemyListFrame.Visible = true
+		headerLabel.Visible = true
+	else
+		toggleButton.Text = "OFF"
+		toggleButton.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+		blackFrame.Visible = false
+		enemyListFrame.Visible = false
+		headerLabel.Visible = false
+	end
+end)
 
 local function formatPercent(value)
-    if value < 0 then value = 0 end
-    return math.floor(value * 100 + 0.5) .. "%"
+	if value < 0 then value = 0 end
+	return math.floor(value * 100 + 0.5) .. "%"
 end
 
 local waveTextLabel, timeTextLabel
 pcall(function()
-    local interface = PlayerGui:WaitForChild("Interface", 15)
-    local gameInfoBar = interface and interface:WaitForChild("GameInfoBar", 15)
-    local defaultFrame = gameInfoBar and gameInfoBar:WaitForChild("Default", 10)
-    if defaultFrame then
-        local waveFrame = defaultFrame:WaitForChild("Wave", 5)
-        local timeLeftFrame = defaultFrame:WaitForChild("TimeLeft", 5)
-        waveTextLabel = waveFrame and waveFrame:WaitForChild("WaveText", 5)
-        timeTextLabel = timeLeftFrame and timeLeftFrame:WaitForChild("TimeLeftText", 5)
-    end
+	local interface = PlayerGui:WaitForChild("Interface", 15)
+	local gameInfoBar = interface and interface:WaitForChild("GameInfoBar", 15)
+	local defaultFrame = gameInfoBar and gameInfoBar:WaitForChild("Default", 10)
+	if defaultFrame then
+		local waveFrame = defaultFrame:WaitForChild("Wave", 5)
+		local timeLeftFrame = defaultFrame:WaitForChild("TimeLeft", 5)
+		waveTextLabel = waveFrame and waveFrame:WaitForChild("WaveText", 5)
+		timeTextLabel = timeLeftFrame and timeLeftFrame:WaitForChild("TimeLeftText", 5)
+	end
 end)
 
 local SHIELD_COLOR_STRING = "rgb(0,170,255)"
 local NORMAL_COLOR = Color3.new(1, 1, 1)
 
 RunService.RenderStepped:Connect(function()
-    if not scriptEnabled then return end
+	if not scriptEnabled then return end
 
-    local waveStr = (waveTextLabel and waveTextLabel.Text) or "?"
-    local timeStr = (timeTextLabel and timeTextLabel.Text) or "??:??"
-    headerLabel.Text = string.format("Wave: %s | Time: %s", waveStr, timeStr)
+	local waveStr = (waveTextLabel and waveTextLabel.Text) or "?"
+	local timeStr = (timeTextLabel and timeTextLabel.Text) or "??:??"
+	headerLabel.Text = string.format("Wave: %s | Time: %s", waveStr, timeStr)
 
-    local enemyGroups = {}  
-    if enemyModule and enemyModule.GetEnemies then  
-        for _, enemy in pairs(enemyModule.GetEnemies()) do  
-            pcall(function()  
-                if not (enemy and enemy.IsAlive and not enemy.IsFakeEnemy) then return end  
-                local hh = enemy.HealthHandler  
-                if not (hh and hh.GetMaxHealth and hh.GetHealth) then return end  
-                local maxHealth = hh:GetMaxHealth()  
-                if not (typeof(maxHealth) == "number" and maxHealth > 0) then return end  
+	local enemyGroups = {}
+	if enemyModule and enemyModule.GetEnemies then
+		for _, enemy in pairs(enemyModule.GetEnemies()) do
+			pcall(function()
+				if not (enemy and enemy.IsAlive and not enemy.IsFakeEnemy) then return end
+				local hh = enemy.HealthHandler
+				if not (hh and hh.GetMaxHealth and hh.GetHealth) then return end
+				local maxHealth = hh:GetMaxHealth()
+				if not (typeof(maxHealth) == "number" and maxHealth > 0) then return end
 
-                local currentHealth = hh:GetHealth() or 0  
-                local currentShield = 0  
-                if hh.GetShield then currentShield = hh:GetShield() or 0 end  
+				local currentHealth = hh:GetHealth() or 0
+				local currentShield = 0
+				if hh.GetShield then currentShield = hh:GetShield() or 0 end
 
-                local hasShield = currentShield > 0  
-                local percentValue = (currentHealth + currentShield) / maxHealth  
-                local hp = formatPercent(percentValue)  
-                local name = enemy.DisplayName or "Unknown"  
+				local hasShield = currentShield > 0
+				local percentValue = (currentHealth + currentShield) / maxHealth
+				local hp = formatPercent(percentValue)
+				local name = enemy.DisplayName or "Unknown"
 
-                if not enemyGroups[name] then enemyGroups[name] = { count = 0, hpData = {} } end  
+				if not enemyGroups[name] then enemyGroups[name] = { count = 0, hpData = {} } end
 
-                local group = enemyGroups[name]  
-                group.count += 1  
-                table.insert(group.hpData, {hp = hp, shield = hasShield})  
-            end)  
-        end  
-    end  
+				local group = enemyGroups[name]
+				group.count += 1
+				table.insert(group.hpData, {hp = hp, shield = hasShield})
+			end)
+		end
+	end
 
-    for _, child in ipairs(enemyListFrame:GetChildren()) do  
-        if child:IsA("TextLabel") then child:Destroy() end  
-    end  
+	for _, child in ipairs(enemyListFrame:GetChildren()) do
+		if child:IsA("TextLabel") then child:Destroy() end
+	end
 
-    local sortedNames = {}  
-    for name in pairs(enemyGroups) do table.insert(sortedNames, name) end  
-    table.sort(sortedNames)  
+	local sortedNames = {}
+	for name in pairs(enemyGroups) do table.insert(sortedNames, name) end
+	table.sort(sortedNames)
 
-    local maxCanvasWidth = 0  
-    for i, name in ipairs(sortedNames) do  
-        local data = enemyGroups[name]  
-        local newLine = Instance.new("TextLabel")  
-        newLine.Name = name  
-        newLine.LayoutOrder = i  
-        newLine.AutomaticSize = Enum.AutomaticSize.X  
-        newLine.Size = UDim2.new(0, 0, 0, 22)  
-        newLine.TextWrapped = false  
-        newLine.BackgroundTransparency = 1  
-        newLine.Font = Enum.Font.SourceSansBold  
-        newLine.TextSize = 22  
-        newLine.TextXAlignment = Enum.TextXAlignment.Left  
-        newLine.RichText = true  
-        newLine.TextColor3 = NORMAL_COLOR  
+	local maxCanvasWidth = 0
+	for i, name in ipairs(sortedNames) do
+		local data = enemyGroups[name]
+		local newLine = Instance.new("TextLabel")
+		newLine.Name = name
+		newLine.LayoutOrder = i
+		newLine.AutomaticSize = Enum.AutomaticSize.X
+		newLine.Size = UDim2.new(0, 0, 0, 22)
+		newLine.TextWrapped = false
+		newLine.BackgroundTransparency = 1
+		newLine.Font = Enum.Font.SourceSansBold
+		newLine.TextSize = 22
+		newLine.TextXAlignment = Enum.TextXAlignment.Left
+		newLine.RichText = true
+		newLine.TextColor3 = NORMAL_COLOR
 
-        local hpStrings = {}  
-        for _, hpInfo in ipairs(data.hpData) do  
-            if hpInfo.shield then  
-                table.insert(hpStrings, string.format('<font color="%s">%s</font>', SHIELD_COLOR_STRING, hpInfo.hp))  
-            else  
-                table.insert(hpStrings, hpInfo.hp)  
-            end  
-        end  
+		local hpStrings = {}
+		for _, hpInfo in ipairs(data.hpData) do
+			if hpInfo.shield then
+				table.insert(hpStrings, string.format('<font color="%s">%s</font>', SHIELD_COLOR_STRING, hpInfo.hp))
+			else
+				table.insert(hpStrings, hpInfo.hp)
+			end
+		end
 
-        local hpString = table.concat(hpStrings, ", ")  
-        newLine.Text = string.format("%s (x%d): %s", name, data.count, hpString)  
-        newLine.Parent = enemyListFrame  
+		local hpString = table.concat(hpStrings, ", ")
+		newLine.Text = string.format("%s (x%d): %s", name, data.count, hpString)
+		newLine.Parent = enemyListFrame
 
-        maxCanvasWidth = math.max(maxCanvasWidth, newLine.AbsoluteSize.X)  
-    end  
+		maxCanvasWidth = math.max(maxCanvasWidth, newLine.AbsoluteSize.X)
+	end
 
-    enemyListFrame.CanvasSize = UDim2.new(0, maxCanvasWidth, 0, uiListLayout.AbsoluteContentSize.Y)
+	enemyListFrame.CanvasSize = UDim2.new(0, maxCanvasWidth, 0, uiListLayout.AbsoluteContentSize.Y)
 end)
 
 RunService.RenderStepped:Connect(function()
-    if not scriptEnabled then return end
+	if not scriptEnabled then return end
 
-    screenGui.DisplayOrder = 2147483647
-    if screenGui.Parent ~= CoreGui then screenGui.Parent = CoreGui end
+	screenGui.DisplayOrder = 2147483647
+	if screenGui.Parent ~= CoreGui then screenGui.Parent = CoreGui end
 
-    for _, child in ipairs(CoreGui:GetChildren()) do  
-        if child:IsA("ScreenGui") and child ~= screenGui then  
-            pcall(function()  
-                child.DisplayOrder = -1  
-            end)  
-        end  
-    end
+	for _, child in ipairs(CoreGui:GetChildren()) do
+		if child:IsA("ScreenGui") and child ~= screenGui then
+			pcall(function()
+				child.DisplayOrder = -1
+			end)
+		end
+	end
 end)
