@@ -3,7 +3,10 @@ local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService        = game:GetService("RunService")
 
-local dtc = getgenv().dtc
+local dtc = getgenv and getgenv().dtc or nil
+newcclosure = newcclosure or function(f) return f end
+setreadonly  = setreadonly  or function() end
+getrawmetatable = getrawmetatable or getmetatable
 
 local LocalPlayer   = Players.LocalPlayer
 local PlayerScripts = LocalPlayer:WaitForChild("PlayerScripts")
@@ -187,14 +190,22 @@ end
 
 local function hookFunc(tbl, key, wrapper)
     local orig = rawget(tbl, key) or tbl[key]
-    if not orig then
-        return
+    if not orig then return end
+
+    if clonefunction and detour_function then
+        local ok, cloned = pcall(clonefunction, orig)
+        if ok and cloned then
+            pcall(detour_function, orig, newcclosure(function(...)
+                return wrapper(cloned, ...)
+            end))
+            return
+        end
     end
 
-    local cloned = clonefunction(orig)
-    detour_function(orig, newcclosure(function(...)
-        return wrapper(cloned, ...)
-    end))
+    local mt = getrawmetatable and getrawmetatable(tbl)
+    if mt and setreadonly then pcall(setreadonly, mt, false) end
+    tbl[key] = newcclosure and newcclosure(function(...) return wrapper(orig, ...) end)
+              or function(...) return wrapper(orig, ...) end
 end
 
 local function hookAbilityHandlerClass()
@@ -357,17 +368,13 @@ local function hookEnemyClass()
 end
 
 local function hookPathEnds()
-
-    if type(PathHandler) == "table" then
-
-        local ok, paths = pcall(function() return PathHandler.GetPaths and PathHandler.GetPaths() end)
-        if ok and paths then
-            for i, path in pairs(paths) do
-                local waypoints = path.Waypoints or path
-                if waypoints and #waypoints > 0 then
-                    PathEnds[i] = waypoints[#waypoints].Position
-                end
-            end
+    if type(PathHandler) ~= "table" then return end
+    local ok, positions = pcall(function()
+        return PathHandler.GetEndNodePositions and PathHandler.GetEndNodePositions()
+    end)
+    if ok and type(positions) == "table" then
+        for i, pos in ipairs(positions) do
+            PathEnds[i] = pos
         end
     end
 end
@@ -920,7 +927,7 @@ task.spawn(function()
             return
         end
         hookedMetatables[mt] = true
-        setreadonly(mt, false)
+        if setreadonly then setreadonly(mt, false) end
         local origNI = rawget(mt, "__newindex")
         mt.__newindex = newcclosure(function(t, k, v)
             if origNI then origNI(t, k, v) else rawset(t, k, v) end
