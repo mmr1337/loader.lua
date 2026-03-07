@@ -23,6 +23,7 @@ local TowerChainAttack       = Remotes:WaitForChild("TowerChainAttack")
 local Common         = ReplicatedStorage:WaitForChild("TDX_Shared"):WaitForChild("Common")
 local TowerUtilities = require(Common:WaitForChild("TowerUtilities"))
 local PathHandler    = require(Common:WaitForChild("PathHandler"))
+local MapHandler     = require(Common:WaitForChild("MapHandler"))
 
 local CONFIG = {
     CheckInterval        = 0.25,
@@ -547,10 +548,14 @@ local function getBestMedicTarget(medicTower, medicHash)
     return bestHash
 end
 
-local function anyTowerNeedsHeal(medicHash)
+local function anyTowerNeedsHeal(medicHash, pos, rsq)
     for h, t in pairs(FilteredTowers) do
         if h == medicHash or not t.IsAlive then continue end
         if t.v10 and t.v10.NoHeal then continue end
+        if pos then
+            local tp = getTowerPos(t)
+            if not tp or getDistanceSq(tp, pos) > rsq then continue end
+        end
         local hh = t.HealthHandler
         if not hh then continue end
         if hh:GetHealth() < hh:GetMaxHealth() then return true end
@@ -558,24 +563,17 @@ local function anyTowerNeedsHeal(medicHash)
     return false
 end
 
-local function getTotalCost(t)
-    return t.TotalCost or 0
-end
-
-local function getBestCombatMedicTarget(tower, hash)
-    local pos = getTowerPos(tower)
-    if not pos then return nil end
-    local rsq = getRange(tower)^2
-    local best, bestCost = nil, -1
+local function getBestCombatMedicTarget(hash)
+    local best, bestDPS = nil, -1
     for h, t in pairs(FilteredTowers) do
         if h == hash or not t.IsAlive then continue end
         if t.v10 and t.v10.NoHeal then continue end
         local tp = getTowerPos(t)
-        if not tp or getDistanceSq(tp, pos) > rsq then continue end
+        if not tp then continue end
         local hh = t.HealthHandler
         if not hh then continue end
-        local cost = getTotalCost(t)
-        if cost > bestCost then bestCost = cost; best = tp end
+        local dps = getDPS(t)
+        if dps > bestDPS then bestDPS = dps; best = tp end
     end
     return best
 end
@@ -610,25 +608,26 @@ end
 local function processCombatMedic(tower, hash, now)
     local al = AbilityListCache[hash]
     if not hasAnyUsableAbility(al) then return end
+    local pos = getTowerPos(tower)
+    if not pos then return end
+    local rsq = getRange(tower)^2
     if MedicPendingTargets[hash] then
         local pd = MedicPendingTargets[hash]
-        local target = pd.tower
         local timedOut = now - pd.time > MEDIC_TIMEOUT
-        local buffed = target and target.IsAlive and isBuffedByMedic(target)
-        if buffed or timedOut then
+        if timedOut then
             MedicPendingTargets[hash] = nil
         else
             return
         end
     end
-    if not anyTowerNeedsHeal(hash) then return end
+    if not anyTowerNeedsHeal(hash, pos, rsq) then return end
     for i = 1, 3 do
         local ab = al[i]
         if isAbilityUsable(ab) then
-            local tp = getBestCombatMedicTarget(tower, hash)
+            local tp = getBestCombatMedicTarget(hash)
             if tp then
                 enqueueSkill(hash, i, tp, nil)
-                MedicPendingTargets[hash] = { tower = nil, time = now }
+                MedicPendingTargets[hash] = { time = now }
                 break
             end
         end
