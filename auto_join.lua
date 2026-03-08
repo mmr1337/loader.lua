@@ -5,6 +5,16 @@ local TeleportService = game:GetService("TeleportService")
 local LocalPlayer = Players.LocalPlayer
 local config = getgenv().TDX_Config or {}
 
+local isVIP = false
+for i = 1, 30 do
+	local attr = LocalPlayer:GetAttribute("VIP")
+	if attr ~= nil then
+		isVIP = (attr == true)
+		break
+	end
+	task.wait(0.5)
+end
+
 local mapAliases = {
 	["nm"] = "NightmareWithMapVoting", ["NM"] = "NightmareWithMapVoting", ["Nightmare"] = "NightmareWithMapVoting",
 	["Inter"] = "Intermediate",
@@ -77,38 +87,51 @@ if game.PlaceId == 9503261072 then
 end
 
 if config.mapvoting then
-	local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-	local mapVotingScreen = playerGui:WaitForChild("Interface"):WaitForChild("MapVotingScreen")
-	local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-
 	local function normalize(t) return string.upper((t:gsub("%s+", " ")):gsub("^%s*(.-)%s*$", "%1")) end
 	local function titleCase(t) return t:gsub("(%w)(%w*)", function(a,b) return a:upper()..b:lower() end) end
 
 	local targetMap = normalize(config.mapvoting)
 	local voteName = titleCase(config.mapvoting)
 
-	repeat task.wait() until mapVotingScreen.Visible
+	if isVIP then
+		local Remotes = ReplicatedStorage:WaitForChild("Remotes", 10)
+		if not Remotes then return end
 
-	local PlayerClass = require(LocalPlayer:WaitForChild("PlayerScripts"):WaitForChild("Client"):WaitForChild("PlayerClass"))
-	local usedOverride = false
-
-	if PlayerClass.LocalPlayerIsVIP() == true then
-		local overrideBtn = mapVotingScreen:WaitForChild("Bottom"):WaitForChild("Override")
-		if not overrideBtn:WaitForChild("Disabled").Visible then
+		pcall(function()
 			Remotes:WaitForChild("MapOverride"):FireServer(voteName)
-			usedOverride = true
-		end
+		end)
+
+		task.wait(1)
+
+		pcall(function()
+			Remotes:WaitForChild("MapVoteCast"):FireServer(voteName)
+		end)
+
+		task.wait(1)
+
+		pcall(function()
+			Remotes:WaitForChild("MapVoteReady"):FireServer()
+		end)
+
+		return
 	end
+
+	local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+	local mapVotingScreen = playerGui:WaitForChild("Interface"):WaitForChild("MapVotingScreen")
+	local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+	repeat task.wait() until mapVotingScreen.Visible
 
 	local mapFound = false
 	for i = 1, 4 do
 		local screen = workspace:WaitForChild("Game"):WaitForChild("MapVoting"):WaitForChild("VotingScreens"):FindFirstChild("VotingScreen"..i)
 		if screen and normalize(screen:WaitForChild("ScreenPart"):WaitForChild("SurfaceGui"):WaitForChild("MapName").Text) == targetMap then
-			mapFound = true break
+			mapFound = true
+			break
 		end
 	end
 
-	if not mapFound and not usedOverride then
+	if not mapFound then
 		local changeRemote = Remotes:WaitForChild("MapChangeVoteCast")
 		local changeBtn = mapVotingScreen.Bottom:WaitForChild("ChangeMap")
 		while not changeBtn.Disabled.Visible do
