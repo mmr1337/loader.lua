@@ -504,12 +504,12 @@ local function cachePaths()
 end
 
 local MAX_E = 200
-local ES_p    = table.create(MAX_E)
-local ES_a  = table.create(MAX_E)
-local ES_h     = table.create(MAX_E)
-local ES_g    = table.create(MAX_E)
-local ES_b = table.create(MAX_E)
-local ES_e  = table.create(MAX_E)
+-- buffer layout per slot (24 bytes):
+-- +0  f32 px | +4  f32 pz | +8  f32 health
+-- +12 f32 progress | +16 u32 bounty | +20 u8 isAir | +21 u8 isStealth
+local ES_STRIDE = 24
+local ES_buf = buffer.create(MAX_E * ES_STRIDE)
+local ES_e   = table.create(MAX_E)
 local ESSize = 0
 
 local function buildESnap(enemies)
@@ -518,18 +518,18 @@ local function buildESnap(enemies)
     local ep = e:GetPosition()
     if not ep then continue end
     local ec = EProgCache[e.Hash]
+    local base = n * ES_STRIDE
+    buffer.writef32(ES_buf, base,    ep.X)
+    buffer.writef32(ES_buf, base+4,  ep.Z)
+    buffer.writef32(ES_buf, base+8,  e.HealthHandler and e.HealthHandler:GetMaxHealth() or 0)
+    buffer.writef32(ES_buf, base+12, ec and ec.progress or 0)
+    buffer.writeu32(ES_buf, base+16, e.BountyDisplayHandler and e.BountyDisplayHandler.BountyCount or 0)
+    buffer.writeu8 (ES_buf, base+20, e.IsAirUnit and 1 or 0)
+    buffer.writeu8 (ES_buf, base+21, e.Stealth and 1 or 0)
     n = n + 1
-    ES_p[n]    = ep
-    ES_a[n]  = e.IsAirUnit
-    ES_h[n]     = e.HealthHandler and e.HealthHandler:GetMaxHealth() or 0
-    ES_g[n]    = ec and ec.progress or 0
-    ES_b[n] = e.BountyDisplayHandler and e.BountyDisplayHandler.BountyCount or 0
-    ES_e[n]  = e
+    ES_e[n] = e
   end
-  for i = n + 1, ESSize do
-    ES_p[i] = nil; ES_a[i] = nil; ES_h[i] = nil
-    ES_g[i] = nil; ES_b[i] = nil; ES_e[i] = nil
-  end
+  for i = n + 1, ESSize do ES_e[i] = nil end
   ESSize = n
 end
 
@@ -537,35 +537,52 @@ local function getFarEnemy(pos, range, noAir)
   local rsq = range * range
   local px, pz = pos.X, pos.Z
   local best, bestPrg = nil, -1
-  for i = 1, ESSize do
-    if noAir and ES_a[i] then continue end
-    local ep = ES_p[i]; local dx = ep.X - px; local dz = ep.Z - pz
+  for i = 0, ESSize - 1 do
+    local base = i * ES_STRIDE
+    if noAir and buffer.readu8(ES_buf, base+20) == 1 then continue end
+    local dx = buffer.readf32(ES_buf, base)   - px
+    local dz = buffer.readf32(ES_buf, base+4) - pz
     if dx*dx + dz*dz > rsq then continue end
-    if ES_g[i] > bestPrg then bestPrg = ES_g[i]; best = ep end
+    local prg = buffer.readf32(ES_buf, base+12)
+    if prg > bestPrg then bestPrg = prg; best = i end
   end
-  return best
+  if best then
+    local base = best * ES_STRIDE
+    return Vector3.new(buffer.readf32(ES_buf, base), 0, buffer.readf32(ES_buf, base+4))
+  end
+  return nil
 end
 
 local function getStrongEnemy(pos, range, noAir)
   local rsq = range * range
   local px, pz = pos.X, pos.Z
   local best, bestHP = nil, -1
-  for i = 1, ESSize do
-    if noAir and ES_a[i] then continue end
-    local ep = ES_p[i]; local dx = ep.X - px; local dz = ep.Z - pz
+  for i = 0, ESSize - 1 do
+    local base = i * ES_STRIDE
+    if noAir and buffer.readu8(ES_buf, base+20) == 1 then continue end
+    local dx = buffer.readf32(ES_buf, base)   - px
+    local dz = buffer.readf32(ES_buf, base+4) - pz
     if dx*dx + dz*dz > rsq then continue end
-    if ES_h[i] > bestHP then bestHP = ES_h[i]; best = ep end
+    local hp = buffer.readf32(ES_buf, base+8)
+    if hp > bestHP then bestHP = hp; best = i end
   end
-  return best
+  if best then
+    local base = best * ES_STRIDE
+    return Vector3.new(buffer.readf32(ES_buf, base), 0, buffer.readf32(ES_buf, base+4))
+  end
+  return nil
 end
 
 local function getRelicTgt()
   local bestPrg, bestPath = -1, 1
-  for i = 1, ESSize do
-    if ES_a[i] then continue end
-    if ES_g[i] > bestPrg then
-      bestPrg = ES_g[i]
-      local ek = ES_e[i] and _tostring(ES_e[i]) or ""
+  for i = 0, ESSize - 1 do
+    local base = i * ES_STRIDE
+    if buffer.readu8(ES_buf, base+20) == 1 then continue end
+    local prg = buffer.readf32(ES_buf, base+12)
+    if prg > bestPrg then
+      bestPrg = prg
+      local e = ES_e[i+1]
+      local ek = e and _tostring(e) or ""
       local ec = EProgCache[ek]
       local pi = ec and ec.pathIndex or 1
       if pi >= 1 then bestPath = pi end
@@ -582,13 +599,12 @@ end
 local function hasStealthInRange(pos, radius)
   local rsq = radius * radius
   local px, pz = pos.X, pos.Z
-  for _, e in _pairs(FEnemies) do
-    if not e.IsAlive or not e.Stealth then continue end
-    local ep = e:GetPosition()
-    if ep then
-      local dx = ep.X - px; local dz = ep.Z - pz
-      if dx*dx + dz*dz <= rsq then return true end
-    end
+  for i = 0, ESSize - 1 do
+    local base = i * ES_STRIDE
+    if buffer.readu8(ES_buf, base+21) == 0 then continue end
+    local dx = buffer.readf32(ES_buf, base)   - px
+    local dz = buffer.readf32(ES_buf, base+4) - pz
+    if dx*dx + dz*dz <= rsq then return true end
   end
   return false
 end
@@ -740,6 +756,7 @@ local function getMobTgt(tower)
   local pos = getTPos(tower)
   if not pos then return nil end
   local rsq = getRange(tower)^2
+  local px, pz = pos.X, pos.Z
   local now = _tick()
   for id, data in _pairs(MobPending) do
     local e = data.enemy
@@ -749,15 +766,19 @@ local function getMobTgt(tower)
     end
   end
   local bE, bHP, bPrg = nil, -1, -1
-  for i = 1, ESSize do
-    if ES_a[i] then continue end
-    if ES_b[i] > 0 then continue end
-    local id = _tostring(ES_e[i])
+  for i = 0, ESSize - 1 do
+    local base = i * ES_STRIDE
+    if buffer.readu8(ES_buf, base+20) == 1 then continue end
+    if buffer.readu32(ES_buf, base+16) > 0 then continue end
+    local id = _tostring(ES_e[i+1])
     if MobPending[id] then continue end
-    local _ep = ES_p[i]; local _dx = _ep.X - pos.X; local _dz = _ep.Z - pos.Z
-    if _dx*_dx + _dz*_dz > rsq then continue end
-    if ES_h[i] > bHP or (ES_h[i] == bHP and ES_g[i] > bPrg) then
-      bHP = ES_h[i]; bPrg = ES_g[i]; bE = ES_e[i]
+    local dx = buffer.readf32(ES_buf, base)   - px
+    local dz = buffer.readf32(ES_buf, base+4) - pz
+    if dx*dx + dz*dz > rsq then continue end
+    local hp  = buffer.readf32(ES_buf, base+8)
+    local prg = buffer.readf32(ES_buf, base+12)
+    if hp > bHP or (hp == bHP and prg > bPrg) then
+      bHP = hp; bPrg = prg; bE = ES_e[i+1]
     end
   end
   return bE
@@ -875,9 +896,10 @@ local function procGeneric(tower, hash, now)
     if not allow and cfg.RadiusDamage and cfg.EffectRadius and pos then
       local rsq = cfg.EffectRadius * cfg.EffectRadius
       local px, pz = pos.X, pos.Z
-      for ei = 1, ESSize do
-        local ep = ES_p[ei]
-        local dx = ep.X - px; local dz = ep.Z - pz
+      for ei = 0, ESSize - 1 do
+        local base = ei * ES_STRIDE
+        local dx = buffer.readf32(ES_buf, base)   - px
+        local dz = buffer.readf32(ES_buf, base+4) - pz
         if dx*dx + dz*dz <= rsq then allow = true; break end
       end
     end
@@ -1032,6 +1054,12 @@ RunService.Heartbeat:Connect(newcclosure(function()
   cachePaths()
   buildESnap(ActEnemies)
 
+  local revealFired = false
+  local stealthExists = false
+  for i = 0, ESSize - 1 do
+    if buffer.readu8(ES_buf, i * ES_STRIDE + 21) == 1 then stealthExists = true; break end
+  end
+
   for hash, tower in _pairs(FTowers) do
     if not tower.IsAlive then continue end
     local tType = tower.Type
@@ -1061,6 +1089,15 @@ RunService.Heartbeat:Connect(newcclosure(function()
 
       else
         local cr = range
+        local abCfg = ab.Config
+        if abCfg and abCfg.HasRevealEffect then
+          if revealFired or not stealthExists then continue end
+          local radius = abCfg.UseTowerRangeForRadius and range or (abCfg.EffectRadius or range)
+          if not hasStealthInRange(pos, radius) then continue end
+          revealFired = true
+          enqueue(hash, idx, nil, nil)
+          break
+        end
 
         local isDirect = SETTINGS.Directional[tType]
         local needPos = isDirect == true
@@ -1077,10 +1114,12 @@ RunService.Heartbeat:Connect(newcclosure(function()
           local rsq = cr * cr
           local has = false
           local _px, _pz = pos.X, pos.Z
-          for i = 1, ESSize do
-            if noAir and ES_a[i] then continue end
-            local _ep = ES_p[i]; local _dx = _ep.X - _px; local _dz = _ep.Z - _pz
-            if _dx*_dx + _dz*_dz <= rsq then has = true; break end
+          for i = 0, ESSize - 1 do
+            local base = i * ES_STRIDE
+            if noAir and buffer.readu8(ES_buf, base+20) == 1 then continue end
+            local dx = buffer.readf32(ES_buf, base)   - _px
+            local dz = buffer.readf32(ES_buf, base+4) - _pz
+            if dx*dx + dz*dz <= rsq then has = true; break end
           end
           allow = has
         end
