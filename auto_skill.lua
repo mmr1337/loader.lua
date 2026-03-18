@@ -9,7 +9,6 @@ getrawmetatable = getrawmetatable or getmetatable
 
 local _pairs = pairs
 local _ipairs = ipairs
-local _tostring = tostring
 local _tick = tick
 
 local LocalPlayer = Players.LocalPlayer
@@ -35,7 +34,7 @@ local function getStaticEntityCfg(entityType)
     if not entityType then
         return nil
     end
-    local name = _tostring(entityType):match("[^.]+$")
+    local name = tostring(entityType):match("[^.]+$")
     if not name then
         return nil
     end
@@ -51,7 +50,7 @@ local StaticEntityBehaviorCache = {}
 local SEBE = { Heal = 1, Attack = 2, PathSpawn = 3 }
 
 local function getStaticBehavior(entityType)
-    local k = _tostring(entityType)
+    local k = tostring(entityType)
     local v = StaticEntityBehaviorCache[k]
     if v then
         return v
@@ -73,8 +72,8 @@ local function getStaticBehavior(entityType)
 end
 
 local CONFIG = {
-    CheckInterval = 0.25,
-    SpecialCheckInterval = 0.25,
+    CheckInterval = 0.2,
+    SpecialCheckInterval = 0.2,
     MobsterDelay = 0.5,
     CacheInterval = 0.05,
 }
@@ -113,7 +112,6 @@ local SETTINGS = {
     },
 }
 
-local LoadoutTypes = {}
 local Initialized = false
 
 local FEnemies = {}
@@ -123,10 +121,7 @@ local TStunCache = {}
 local TKritzCache = {}
 local TRangeCache = {}
 local TDPSCache = {}
-local ALCache = {}
-local AUCache = {}
 local TStealthCache = {}
-local ACfgCache = {}
 
 local ActEnemies = {}
 
@@ -139,7 +134,7 @@ local MobLastUsed = {}
 local MobPending = {}
 local MOB_TO = 0.4
 
-local Q_CAP = 8
+local Q_CAP = 12
 local SQ_h = table.create(Q_CAP)
 local SQ_i = table.create(Q_CAP)
 local SQ_p = table.create(Q_CAP)
@@ -182,75 +177,91 @@ local function getLvls(tower)
     return lh.Path1Level, lh.Path2Level
 end
 
-local function invalACache()
-    table.clear(AUCache)
+local function getDPS(tower)
+    local h = tower.Hash
+    local v = TDPSCache[h]
+    if v then
+        return v
+    end
+    if not tower.LevelHandler then
+        return 0
+    end
+    local levelStats = tower.LevelHandler:GetLevelStats()
+    local buffStats = tower.BuffHandler and tower.BuffHandler:GetStatMultipliers() or nil
+    local result = TUtils.CalculateDPS(levelStats, buffStats)
+    v = typeof(result) == "number" and result or 0
+    TDPSCache[h] = v
+    return v
 end
 
-local function buildAList(hash, ah)
-    local map = ah and ah.AbilityIndexToNameMap
-    local abs = ah and ah.Abilities
-    if not map or not abs then
-        ALCache[hash] = nil
-        ACfgCache[hash] = nil
-        return nil, nil
-    end
-    local t = table.create(3)
-    local cfgs = table.create(3)
-    local hasAny = false
-    for i = 1, 3 do
-        local n = map[i]
-        local ab = n and abs[n] or nil
-        t[i] = ab
-        cfgs[i] = ab and ab.Config or nil
-        if ab then
-            hasAny = true
-        end
-    end
-    if hasAny then
-        ALCache[hash] = t
-        ACfgCache[hash] = cfgs
-        return t, cfgs
-    end
-    ALCache[hash] = nil
-    ACfgCache[hash] = nil
-    return nil, nil
-end
-
-local function refreshAbilityCache(hash, tower)
+local function getTowerAbilityData(tower)
     if not tower then
         return nil, nil
     end
     local ah = tower.AbilityHandler
     if not ah then
-        ALCache[hash] = nil
-        ACfgCache[hash] = nil
         return nil, nil
     end
-    return buildAList(hash, ah)
-end
+    local map = ah.AbilityIndexToNameMap
+    local abs = ah.Abilities
+    if not map or not abs then
+        return nil, nil
+    end
 
-local function getAbilityCaches(hash, tower)
-    local al = ALCache[hash]
-    local cfgs = ACfgCache[hash]
-    local valid = false
-    if al then
-        for i = 1, 3 do
-            if al[i] ~= nil then
-                valid = true
-                break
-            end
+    local list = table.create(3)
+    local cfgs = table.create(3)
+    local any = false
+
+    for i = 1, 3 do
+        local n = map[i]
+        local ab = n and abs[n] or nil
+        list[i] = ab
+        cfgs[i] = ab and ab.Config or nil
+        if ab then
+            any = true
         end
     end
-    if valid and cfgs then
-        return al, cfgs
+
+    if not any then
+        return nil, nil
     end
-    return refreshAbilityCache(hash, tower)
+
+    return list, cfgs
+end
+
+local function getAbilityAt(tower, index)
+    local list = getTowerAbilityData(tower)
+    if type(list) == "table" then
+        return list[index]
+    end
+    return nil
+end
+
+local function canUseAbility(ab)
+    if not ab then
+        return false
+    end
+    local ok, result = pcall(function()
+        return ab:CanUse()
+    end)
+    return ok and result == true
+end
+
+local function hasUsableTowerAbility(tower)
+    local list = getTowerAbilityData(tower)
+    if type(list) ~= "table" then
+        return false
+    end
+    for i = 1, 3 do
+        if canUseAbility(list[i]) then
+            return true
+        end
+    end
+    return false
 end
 
 local function onTAdd(hash, tower)
     FTowers[hash] = tower
-    refreshAbilityCache(hash, tower)
-
     TRangeCache[hash] = tower:GetCurrentRange()
 
     if tower.LevelHandler then
@@ -267,7 +278,7 @@ local function onTAdd(hash, tower)
         local stunned = bh:IsStunned()
         local kritz = false
         for _, b in _pairs(bh.ActiveBuffs or {}) do
-            if b and b.Name and _tostring(b.Name):match("^MedicKritz") then
+            if b and b.Name and tostring(b.Name):match("^MedicKritz") then
                 kritz = true
                 break
             end
@@ -279,13 +290,11 @@ end
 
 local function onTRemove(hash)
     FTowers[hash] = nil
-    ALCache[hash] = nil
     TStunCache[hash] = nil
     TKritzCache[hash] = nil
     TDPSCache[hash] = nil
     TRangeCache[hash] = nil
     TStealthCache[hash] = nil
-    ACfgCache[hash] = nil
 end
 
 local function onEAdd(hash, enemy)
@@ -333,7 +342,8 @@ local function hookFn(tbl, key, wrapper)
 end
 
 local function hookAHC()
-    local ahcPath = GameClass:FindFirstChild("TowerClass") and GameClass.TowerClass:FindFirstChild("AbilityHandlerClass")
+    local ahcPath = GameClass:FindFirstChild("TowerClass")
+        and GameClass.TowerClass:FindFirstChild("AbilityHandlerClass")
 
     local ahc = nil
     if ahcPath then
@@ -359,15 +369,6 @@ local function hookAHC()
         return false
     end
 
-    hookFn(ahc, "_GenerateAbilities", function(orig, self, ...)
-        orig(self, ...)
-        local tower = self.Tower
-        if tower and tower.Hash then
-            refreshAbilityCache(tower.Hash, tower)
-            table.clear(AUCache)
-        end
-    end)
-
     local ahcPath2 = GameClass:FindFirstChild("TowerClass")
         and GameClass.TowerClass:FindFirstChild("AbilityHandlerClass")
         and GameClass.TowerClass.AbilityHandlerClass:FindFirstChild("AbilityClass")
@@ -392,8 +393,7 @@ local function hookAHC()
     end
     if ac then
         hookFn(ac, "BeginCooldown", function(orig, ab, ...)
-            orig(ab, ...)
-            AUCache[ab] = false
+            return orig(ab, ...)
         end)
     end
 
@@ -430,7 +430,7 @@ local function hookTC()
         local stunned = bh:IsStunned()
         local kritz = false
         for _, b in _pairs(bh.ActiveBuffs or {}) do
-            if b and b.Name and _tostring(b.Name):match("^MedicKritz") then
+            if b and b.Name and tostring(b.Name):match("^MedicKritz") then
                 kritz = true
                 break
             end
@@ -439,7 +439,6 @@ local function hookTC()
         TKritzCache[hash] = kritz
         TRangeCache[hash] = nil
         TDPSCache[hash] = nil
-        refreshAbilityCache(hash, tower)
     end)
 
     hookFn(TowerClass, "RemoveBuffData", function(orig, tower, ...)
@@ -455,7 +454,7 @@ local function hookTC()
         local stunned = bh:IsStunned()
         local kritz = false
         for _, b in _pairs(bh.ActiveBuffs or {}) do
-            if b and b.Name and _tostring(b.Name):match("^MedicKritz") then
+            if b and b.Name and tostring(b.Name):match("^MedicKritz") then
                 kritz = true
                 break
             end
@@ -464,7 +463,6 @@ local function hookTC()
         TKritzCache[hash] = kritz
         TRangeCache[hash] = nil
         TDPSCache[hash] = nil
-        refreshAbilityCache(hash, tower)
     end)
 
     hookFn(TowerClass, "SetStealth", function(orig, tower, stealth, ...)
@@ -484,7 +482,6 @@ local function hookTC()
         if ok and hash then
             TRangeCache[hash] = nil
             TDPSCache[hash] = nil
-            refreshAbilityCache(hash, tower)
         end
     end)
 end
@@ -552,78 +549,19 @@ local function snapEnemies()
     return arr
 end
 
-local function isUsable(ab)
-    if not ab then
-        return false
-    end
-    local v = AUCache[ab]
-    if v ~= nil then
-        return v
-    end
-    local ok, result = pcall(function()
-        return ab:CanUse()
-    end)
-    v = ok and result or false
-    AUCache[ab] = v
-    return v
-end
-
-local function hasUsable(al)
-    if not al then
-        return false
-    end
-    for i = 1, 3 do
-        local ab = al[i]
-        if ab == nil then
-            break
-        end
-        if isUsable(ab) then
-            return true
-        end
-    end
-    return false
-end
-
-local function useAb(hash, index)
-    local al = ALCache[hash]
-    local ab = al and al[index]
-    if not ab then
-        return false
-    end
-    if not isUsable(ab) then
-        return false
-    end
-
-    AUCache[ab] = false
-    pcall(function()
-        ab:BeginCooldown()
-    end)
-
-    local ok, serverCooldown = UseAbilReq:InvokeServer(hash, index, nil, nil)
-    if ok and serverCooldown then
-        ab.CooldownRemaining = serverCooldown
-        return true
-    end
-
-    if not ok then
-        ab.CooldownRemaining = 0
-        AUCache[ab] = nil
-    end
-
-    return false
-end
-
 local function enqueue(hash, index, pos, targetHash)
-    local al = ALCache[hash]
-    local ab = al and al[index]
+    local tower = FTowers[hash]
+    if not tower then
+        return
+    end
+    local ab = getAbilityAt(tower, index)
     if ab then
-        if not isUsable(ab) then
+        if not canUseAbility(ab) then
             return
         end
         pcall(function()
             ab:BeginCooldown()
         end)
-        AUCache[ab] = false
     end
     if SQ_sz >= Q_CAP then
         return
@@ -635,6 +573,34 @@ local function enqueue(hash, index, pos, targetHash)
     SQ_th[SQ_tl] = targetHash
     SQ_ab[SQ_tl] = ab
     SQ_sz = SQ_sz + 1
+end
+
+local function useAbilityNow(hash, index)
+    local tower = FTowers[hash]
+    if not tower then
+        return false
+    end
+    local ab = getAbilityAt(tower, index)
+    if not ab then
+        return false
+    end
+    if not canUseAbility(ab) then
+        return false
+    end
+    pcall(function()
+        ab:BeginCooldown()
+    end)
+    local ok, serverCooldown = UseAbilReq:InvokeServer(hash, index, nil, nil)
+    if ok and serverCooldown then
+        ab.CooldownRemaining = serverCooldown
+        return true
+    end
+    if not ok then
+        pcall(function()
+            ab.CooldownRemaining = 0
+        end)
+    end
+    return false
 end
 
 local function cachePaths()
@@ -773,23 +739,6 @@ local function hasStealthInRange(pos, radius)
         end
     end
     return false
-end
-
-local function getDPS(tower)
-    local h = tower.Hash
-    local v = TDPSCache[h]
-    if v then
-        return v
-    end
-    if not tower.LevelHandler then
-        return 0
-    end
-    local levelStats = tower.LevelHandler:GetLevelStats()
-    local buffStats = tower.BuffHandler and tower.BuffHandler:GetStatMultipliers() or nil
-    local result = TUtils.CalculateDPS(levelStats, buffStats)
-    v = typeof(result) == "number" and result or 0
-    TDPSCache[h] = v
-    return v
 end
 
 local function getBestStealthTgt(selfHash)
@@ -1019,16 +968,19 @@ local function getMobTgt(tower)
 end
 
 local function procMobster(tower, hash, now)
-    local al = ({getAbilityCaches(hash, tower)})[1] or ALCache[hash]
-    if not hasUsable(al) then
+    if not hasUsableTowerAbility(tower) then
         return
     end
     if MobLastUsed[hash] and now - MobLastUsed[hash] < CONFIG.MobsterDelay then
         return
     end
+    local list = getTowerAbilityData(tower)
+    if type(list) ~= "table" then
+        return
+    end
     for i = 1, 3 do
-        local ab = al[i]
-        if isUsable(ab) then
+        local ab = list[i]
+        if canUseAbility(ab) then
             local e = getMobTgt(tower)
             if e then
                 local ep = e:GetPosition()
@@ -1044,11 +996,19 @@ local function procMobster(tower, hash, now)
 end
 
 local function procGeneric(tower, hash, now)
-    local al, cfgs = getAbilityCaches(hash, tower)
-    if not hasUsable(al) then
+    local list, cfgs = getTowerAbilityData(tower)
+    if type(list) ~= "table" or not cfgs then
         return
     end
-    if not cfgs then
+
+    local usableAny = false
+    for i = 1, 3 do
+        if canUseAbility(list[i]) then
+            usableAny = true
+            break
+        end
+    end
+    if not usableAny then
         return
     end
 
@@ -1056,8 +1016,8 @@ local function procGeneric(tower, hash, now)
     local range = getRange(tower)
 
     for i = 1, 3 do
-        local ab = al[i]
-        if not ab or not isUsable(ab) then
+        local ab = list[i]
+        if not ab or not canUseAbility(ab) then
             continue
         end
         local cfg = cfgs[i] or ab.Config
@@ -1222,12 +1182,8 @@ local function procAttack(attackHash, now)
         if dx * dx + dz * dz > getRange(tower) ^ 2 then
             continue
         end
-        local al = ({getAbilityCaches(hash, tower)})[1] or ALCache[hash]
-        if not al then
-            continue
-        end
-        local tType = tower.Type
 
+        local tType = tower.Type
         if tType == "Medic" then
             local _, p2 = getLvls(tower)
             if p2 < 4 then
@@ -1244,9 +1200,13 @@ local function procAttack(attackHash, now)
                     continue
                 end
             end
+            local list = getTowerAbilityData(tower)
+            if type(list) ~= "table" then
+                continue
+            end
             for i = 1, 3 do
-                local ab = al[i]
-                if isUsable(ab) then
+                local ab = list[i]
+                if canUseAbility(ab) then
                     local th = getMedicTgt(tower, hash)
                     if th then
                         local targetTower = FTowers[th]
@@ -1295,7 +1255,6 @@ RunService.RenderStepped:Connect(newcclosure(function()
         return
     end
     local now = _tick()
-    invalACache()
 
     if not next(FTowers) then
         return
@@ -1323,8 +1282,7 @@ RunService.RenderStepped:Connect(newcclosure(function()
             if tType == "Medic" then
                 continue
             end
-            local al = ({getAbilityCaches(hash, tower)})[1] or ALCache[hash]
-            if not hasUsable(al) then
+            if not hasUsableTowerAbility(tower) then
                 continue
             end
             if tType == "Mobster" or tType == "Golden Mobster" then
@@ -1345,7 +1303,6 @@ RunService.Heartbeat:Connect(newcclosure(function()
         return
     end
     local now = _tick()
-    invalACache()
 
     if not next(FTowers) then
         return
@@ -1376,8 +1333,19 @@ RunService.Heartbeat:Connect(newcclosure(function()
             continue
         end
 
-        local al, cfgs = getAbilityCaches(hash, tower)
-        if not hasUsable(al) then
+        local list, cfgs = getTowerAbilityData(tower)
+        if type(list) ~= "table" then
+            continue
+        end
+
+        local usableAny = false
+        for i = 1, 3 do
+            if canUseAbility(list[i]) then
+                usableAny = true
+                break
+            end
+        end
+        if not usableAny then
             continue
         end
 
@@ -1389,8 +1357,8 @@ RunService.Heartbeat:Connect(newcclosure(function()
         local noAir = SETTINGS.SkipAirTargeting[tType]
 
         for idx = 1, 3 do
-            local ab = al[idx]
-            if not isUsable(ab) then
+            local ab = list[idx]
+            if not canUseAbility(ab) then
                 continue
             end
 
@@ -1405,7 +1373,7 @@ RunService.Heartbeat:Connect(newcclosure(function()
 
             else
                 local cr = range
-                local abCfg = (cfgs and cfgs[idx]) or ab.Config
+                local abCfg = (cfgs and cfgs[idx]) or (ab and ab.Config)
                 if abCfg and abCfg.HasRevealEffect then
                     if revealFired or not stealthExists then
                         continue
@@ -1421,15 +1389,15 @@ RunService.Heartbeat:Connect(newcclosure(function()
 
                 local isDirect = SETTINGS.Directional[tType]
                 local needPos = isDirect == true
-                if ab.IsManualAimAtGround or ab.IsManualAimAtPath then
+                if ab and (ab.IsManualAimAtGround or ab.IsManualAimAtPath) then
                     needPos = true
                 end
 
                 if needPos then
-                    if ab.ManualAimInfiniteRange then
+                    if ab and ab.ManualAimInfiniteRange then
                         tPos = getRelicTgt()
                     else
-                        tPos = getFarEnemy(pos, ab.ManualAimCustomRange or cr, noAir)
+                        tPos = getFarEnemy(pos, (ab and ab.ManualAimCustomRange) or cr, noAir)
                     end
                     allow = tPos ~= nil
                 elseif not isDirect then
@@ -1456,7 +1424,7 @@ RunService.Heartbeat:Connect(newcclosure(function()
                 if tPos then
                     enqueue(hash, idx, tPos, nil)
                 else
-                    useAb(hash, idx)
+                    useAbilityNow(hash, idx)
                 end
             end
         end
@@ -1488,15 +1456,6 @@ task.spawn(function()
     hookEC()
     hookAHC()
     populate()
-
-    local rawT = TowerClass.GetTowers()
-    if rawT then
-        for hash, tower in _pairs(rawT) do
-            if tower then
-                refreshAbilityCache(hash, tower)
-            end
-        end
-    end
 
     ActEnemies = snapEnemies()
     Initialized = true
@@ -1569,9 +1528,6 @@ task.spawn(function()
             for hash, tower in _pairs(rawTowers) do
                 if tower then
                     FTowers[hash] = tower
-                    if not ALCache[hash] or not ACfgCache[hash] then
-                        refreshAbilityCache(hash, tower)
-                    end
                 end
             end
         end
@@ -1596,10 +1552,13 @@ task.spawn(function()
             SQ_sz = SQ_sz - 1
             if ab then
                 if ok and serverCooldown then
-                    ab.CooldownRemaining = serverCooldown
+                    pcall(function()
+                        ab.CooldownRemaining = serverCooldown
+                    end)
                 elseif not ok then
-                    ab.CooldownRemaining = 0
-                    AUCache[ab] = nil
+                    pcall(function()
+                        ab.CooldownRemaining = 0
+                    end)
                 end
             end
         end
