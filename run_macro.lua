@@ -6,7 +6,6 @@ local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 local PlayerScripts = player:WaitForChild("PlayerScripts")
 local cashStat = player:WaitForChild("leaderstats"):WaitForChild("Cash")
-local currentCash = cashStat.Value
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 local PlayerGui = player:WaitForChild("PlayerGui")
 local function setThreadIdentity(identity)
@@ -49,10 +48,10 @@ local defaultConfig = {
     ["AllowParallelSkips"] = true,
     ["UseThreadedRemotes"] = true,
     ["ShopInstantMode"] = true,
+    -- Timing-based execution (wait for recorded wave/time before acting)
     ["PlaceByTiming"] = false,
     ["UpgradeByTiming"] = false,
-    ["SellByTiming"] = false,
-    ["MovePlayer"] = true,
+    ["SellByTiming"] = true,
 }
 
 globalEnv.TDX_Config = globalEnv.TDX_Config or {}
@@ -93,61 +92,10 @@ local function InitializeModules()
 end
 InitializeModules()
 
-GameModules.Networking.GetEvent("UpdateCash"):AttachCallback(function(cash)
-    currentCash = cash
-end)
-cashStat.Changed:Connect(function(v) if currentCash < v then currentCash = v end end)
-
-local HashToPosCache = {}
-
-local axisToHash = {}
-
-do
-    local existing = GameModules.TowerClass.GetTowers and GameModules.TowerClass.GetTowers()
-    if existing then
-        for hash, tower in pairs(existing) do
-            if tower.SpawnCFrame and typeof(tower.SpawnCFrame) == "CFrame" then
-                local p = tower.SpawnCFrame.Position
-                local hs = tostring(hash)
-                HashToPosCache[hs] = {x = p.X, y = p.Y, z = p.Z}
-                axisToHash[p.X] = hs
-            end
-        end
-    end
-end
-
-do
-    local origNew = rawget(GameModules.TowerClass, "New") or GameModules.TowerClass.New
-    if origNew then
-        GameModules.TowerClass.New = newcclosure(function(...)
-            local tower = origNew(...)
-            if tower and tower.Hash and tower.SpawnCFrame and typeof(tower.SpawnCFrame) == "CFrame" then
-                local p = tower.SpawnCFrame.Position
-                local hs = tostring(tower.Hash)
-                HashToPosCache[hs] = {x = p.X, y = p.Y, z = p.Z}
-                axisToHash[p.X] = hs
-            end
-            return tower
-        end)
-    end
-
-    local origDestroy = rawget(GameModules.TowerClass, "Destroy") or GameModules.TowerClass.Destroy
-    if origDestroy then
-        GameModules.TowerClass.Destroy = newcclosure(function(tower, ...)
-            if tower and tower.Hash then
-                local hs = tostring(tower.Hash)
-                local pos = HashToPosCache[hs]
-                if pos then axisToHash[pos.x] = nil end
-                HashToPosCache[hs] = nil
-            end
-            return origDestroy(tower, ...)
-        end)
-    end
-end
-
+-- PowerUp state tracking
 local PowerUpState = {
-    Inventory  = {},
-    UsageStats = {},
+    Inventory  = {},  -- { [puName] = count }
+    UsageStats = {},  -- { [puName] = NumUsed } — for MaxUses check
 }
 
 pcall(function()
@@ -176,6 +124,7 @@ pcall(function()
 end)
 
 local function CanUsePowerUp(puName)
+    -- Inventory = 0: bail, không thể dùng
     if (PowerUpState.Inventory[puName] or 0) <= 0 then return false, "NoCount" end
     if GameModules.PowerUpsConfig then
         local ok, cfg = pcall(function() return GameModules.PowerUpsConfig.GetConfig(puName) end)
@@ -195,6 +144,7 @@ local function WaitUntilPowerUpReady(puName, timeout)
     while tick() - t0 < timeout do
         local ok, reason = CanUsePowerUp(puName)
         if ok then return true end
+        -- Chỉ bail khi inventory = 0 hoặc đã hết lượt dùng tối đa
         if reason == "NoCount" or reason == "NoUsesRemaining" then return false, reason end
         RunService.RenderStepped:Wait()
     end
@@ -220,15 +170,11 @@ NetEvents.NewCoinDropEvent:AttachCallback(function(args)
     end
 end)
 local function FindTower(mode, value)
+    local towers = GameModules.TowerClass.GetTowers()
     if mode == "Axis" then
-        local hs = axisToHash[value]
-        if hs then
-            local hash = tonumber(hs)
-            if hash then
-                local tower = GameModules.TowerClass.GetTowers()[hash]
-                if tower then return hash, tower end
-                HashToPosCache[hs] = nil
-                axisToHash[value] = nil
+        for hash, tower in pairs(towers) do
+            if tower.SpawnCFrame and typeof(tower.SpawnCFrame) == "CFrame" and tower.SpawnCFrame.Position.X == value then
+                return hash, tower
             end
         end
     end
@@ -278,6 +224,8 @@ end
 local function convertToTimeFormat(num) return string.format("%02d:%02d", math.floor(num / 100), num % 100) end
 local function parseTimeToNumber(s) local m,sec = s:match("(%d+):(%d+)"); return m and (tonumber(m)*100 + tonumber(sec)) or nil end
 
+-- Wait until recorded Wave/Time is reached. gameUI must be passed.
+-- Wave is matched exactly; Time waits until game time <= recorded time (countdown timer).
 local function WaitForTiming(entry, gameUI)
     if not entry.Wave and not entry.Time then return end
     while true do
@@ -306,16 +254,13 @@ local function CalculateUpgradeCost(tower, path, count)
     return s and r or nil
 end
 
-local function WaitForCash(amount) while currentCash < amount do RunService.RenderStepped:Wait() end end
+local function WaitForCash(amount) while cashStat.Value < amount do RunService.RenderStepped:Wait() end end
 local function PlaceTowerRetry(args, axisValue)
     for i = 1, 1 do
         if globalEnv.TDX_Config.UseThreadedRemotes then SafeRemoteCall("InvokeServer", Remotes.PlaceTower, unpack(args))
         else pcall(function() Remotes.PlaceTower:InvokeServer(unpack(args)) end) end
         SmartWait(globalEnv.TDX_Config.MacroStepDelay)
-        if WaitForTower("Axis", axisValue, 3) then
-            RunService.RenderStepped:Wait()
-            return true
-        end
+        if WaitForTower("Axis", axisValue, 3) then return true end
     end
     return false
 end
@@ -338,6 +283,7 @@ local function UpgradeTowerRetry(axisValue, path, count)
         if currentLevel >= targetLevel then return true end
 
         local upgradesNeeded = targetLevel - currentLevel
+        local currentCash = cashStat.Value
         local amountToBuy = 0
 
         for k = upgradesNeeded, 1, -1 do
@@ -371,7 +317,6 @@ local function UseMovingSkillRetry(axisValue, skillIndex, location)
     local Remote = Remotes:FindFirstChild("TowerUseAbilityRequest")
     if not Remote then return false end
     local isEvent = Remote:IsA("RemoteEvent")
-    location = location or "no_pos"
     for i = 1, 1 do  
         local hash, tower = WaitForTower("Axis", axisValue)
         if hash and tower and tower.AbilityHandler then  
@@ -425,42 +370,6 @@ local function SellAllTowers(skipList)
         end
     end
 end
-local function MovePlayerTo(posStr)
-    local v = {}; for c in posStr:gmatch("[^,%s]+") do table.insert(v, tonumber(c)) end
-    if #v ~= 3 then return false end
-    local target = Vector3.new(v[1], v[2], v[3])
-    local character = player.Character
-    if not character then return false end
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    local hrp = character:FindFirstChild("HumanoidRootPart")
-    if not humanoid or not hrp then return false end
-
-    local walkSpeed = humanoid.WalkSpeed > 0 and humanoid.WalkSpeed or 16
-    local startPos = hrp.Position
-    local endPos   = Vector3.new(target.X, hrp.Position.Y, target.Z)
-    local distance = (endPos - startPos).Magnitude
-    local duration = distance / walkSpeed
-
-    local lookCF = distance > 0.01 and CFrame.lookAt(startPos, endPos) or hrp.CFrame
-    local rotOnly = lookCF - lookCF.Position
-
-    local savedSpeed = humanoid.WalkSpeed
-    humanoid.WalkSpeed = 0
-
-    local elapsed = 0
-    local conn = RunService.RenderStepped:Connect(function(dt)
-        elapsed = elapsed + dt
-        local alpha = math.min(elapsed / math.max(duration, 0.001), 1)
-        hrp.CFrame = CFrame.new(startPos:Lerp(endPos, alpha)) * rotOnly
-    end)
-    while elapsed < duration do RunService.RenderStepped:Wait() end
-    conn:Disconnect()
-
-    hrp.CFrame = CFrame.new(endPos) * rotOnly
-    humanoid.WalkSpeed = savedSpeed
-    return true
-end
-
 local function StartRebuildSystem(rebuildEntry, towerRecords, skipTypesMap)
     local config = globalEnv.TDX_Config
     local rebuildAttempts, soldPositions, jobQueue, activeJobs = {}, {}, {}, {}
@@ -479,111 +388,87 @@ local function StartRebuildSystem(rebuildEntry, towerRecords, skipTypesMap)
                 local job = table.remove(jobQueue, 1)
                 task.spawn(function()
                     setThreadIdentity(2)
-                    local records = job.records
-                    local placeRecord = nil
-                    local upgradesByPath = {[1] = {}, [2] = {}}
-                    local targetRecords, movingRecords = {}, {}
+                    local records = job.records  
+                    local placeRecord = nil  
+                    local upgradesByPath = {[1] = {}, [2] = {}}  
+                    local targetRecords, movingRecords = {}, {}  
 
-                    for _, record in ipairs(records) do
-                        local action = record.entry
-                        if action.TowerPlaced then placeRecord = record
-                        elseif action.TowerUpgraded then table.insert(upgradesByPath[action.UpgradePath] or {}, record)
-                        elseif action.TowerTargetChange then table.insert(targetRecords, record)
-                        elseif action.towermoving then table.insert(movingRecords, record) end
-                    end
+                    for _, record in ipairs(records) do  
+                        local action = record.entry  
+                        if action.TowerPlaced then placeRecord = record  
+                        elseif action.TowerUpgraded then table.insert(upgradesByPath[action.UpgradePath] or {}, record)  
+                        elseif action.TowerTargetChange then table.insert(targetRecords, record)  
+                        elseif action.towermoving then table.insert(movingRecords, record) end  
+                    end  
 
-                    local finalPosEntry = nil
-                    local skillEntry = nil
-                    for _, r in ipairs(movingRecords) do
-                        local e = r.entry
-                        if e.location and e.location ~= "no_pos" then
-                            finalPosEntry = e
-                        else
-                            skillEntry = e
-                        end
-                    end
-                    if not skillEntry then skillEntry = finalPosEntry end
+                    local rebuildSuccess = true  
+                    if placeRecord then  
+                        local a = placeRecord.entry  
+                        local v = {}; for c in a.TowerVector:gmatch("[^,%s]+") do table.insert(v, tonumber(c)) end  
+                        if #v == 3 then  
+                            local pos = Vector3.new(v[1], v[2], v[3])  
+                            local args = {tonumber(a.TowerA1), a.TowerPlaced, pos, tonumber(a.Rotation or 0)}  
+                            WaitForCash(a.TowerPlaceCost)  
+                            if not PlaceTowerRetry(args, pos.X) then rebuildSuccess = false end  
+                        end  
+                    end  
 
-                    local placePos, newAxisX
-                    if finalPosEntry and placeRecord then
-                        local lv = {}; for c in finalPosEntry.location:gmatch("[^,%s]+") do table.insert(lv, tonumber(c)) end
-                        if #lv == 3 then placePos = Vector3.new(lv[1], lv[2], lv[3]); newAxisX = lv[1] end
-                    end
-                    if not placePos and placeRecord then
-                        local v = {}; for c in placeRecord.entry.TowerVector:gmatch("[^,%s]+") do table.insert(v, tonumber(c)) end
-                        if #v == 3 then placePos = Vector3.new(v[1], v[2], v[3]); newAxisX = v[1] end
-                    end
+                    if rebuildSuccess and placeRecord then  
+                        local v = {}; for c in placeRecord.entry.TowerVector:gmatch("[^,%s]+") do table.insert(v, tonumber(c)) end  
+                        local posX = v[1]  
+                        if #upgradesByPath[1] > 0 then if not UpgradeTowerRetry(posX, 1, #upgradesByPath[1]) then rebuildSuccess = false end end  
+                        if rebuildSuccess and #upgradesByPath[2] > 0 then if not UpgradeTowerRetry(posX, 2, #upgradesByPath[2]) then rebuildSuccess = false end end  
+                    end  
 
-                    local rebuildSuccess = true
-                    if placeRecord and placePos then
-                        local a = placeRecord.entry
-                        local args = {tonumber(a.TowerA1), a.TowerPlaced, placePos, tonumber(a.Rotation or 0)}
-                        WaitForCash(a.TowerPlaceCost)
-                        if not PlaceTowerRetry(args, newAxisX) then rebuildSuccess = false end
-
-                        if rebuildSuccess and newAxisX ~= job.x then
-                            towerRecords[newAxisX] = towerRecords[job.x]
-                            towerRecords[job.x] = nil
-                            rebuildAttempts[newAxisX] = rebuildAttempts[job.x]
-                            rebuildAttempts[job.x] = nil
-                            local hs = axisToHash[job.x]
-                            if hs then axisToHash[newAxisX] = hs; axisToHash[job.x] = nil end
-                        end
-                    end
-
-                    if rebuildSuccess and newAxisX then
-                        if #upgradesByPath[1] > 0 then if not UpgradeTowerRetry(newAxisX, 1, #upgradesByPath[1]) then rebuildSuccess = false end end
-                        if rebuildSuccess and #upgradesByPath[2] > 0 then if not UpgradeTowerRetry(newAxisX, 2, #upgradesByPath[2]) then rebuildSuccess = false end end
-                    end
-
-                    if rebuildSuccess then
-                        for _, r in ipairs(targetRecords) do ChangeTargetRetry(tonumber(r.entry.TowerTargetChange), r.entry.TargetWanted) end
-                        if not finalPosEntry and skillEntry then
-                            task.spawn(function()
-                                local axisToCheck = newAxisX or skillEntry.towermoving
-                                local deadline = tick() + 10
-                                while tick() < deadline do
-                                    local _, t = FindTower("Axis", axisToCheck)
-                                    if t then break end
-                                    SmartWait(0.5)
-                                end
-                                UseMovingSkillRetry(axisToCheck, skillEntry.skillindex, skillEntry.location)
-                            end)
-                        end
-                    end
+                    if rebuildSuccess then  
+                        for _, r in ipairs(targetRecords) do ChangeTargetRetry(tonumber(r.entry.TowerTargetChange), r.entry.TargetWanted) end  
+                        if #movingRecords > 0 then  
+                            task.spawn(function()  
+                                local last = movingRecords[#movingRecords].entry  
+                                UseMovingSkillRetry(last.towermoving, last.skillindex, last.location)  
+                            end)  
+                        end  
+                    end  
                     activeJobs[job.x] = nil  
                 end)
             end
         end
     end)
 
-    task.spawn(function()
-        while true do
-            local jobsAdded = false
-            for x, records in pairs(towerRecords) do
-                if not axisToHash[x] and not activeJobs[x] and not (config.ForceRebuildEvenIfSold == false and soldPositions[x]) then
+    task.spawn(function()  
+        while true do  
+            local existingTowersCache = {}  
+            for hash, tower in pairs(GameModules.TowerClass.GetTowers()) do  
+                if tower.SpawnCFrame then existingTowersCache[tower.SpawnCFrame.Position.X] = true end  
+            end  
+
+            local jobsAdded = false  
+            for x, records in pairs(towerRecords) do  
+                if not existingTowersCache[x] and not activeJobs[x] and not (config.ForceRebuildEvenIfSold == false and soldPositions[x]) then  
                     local towerType = nil
-                    for _, record in ipairs(records) do
-                        if record.entry.TowerPlaced then towerType = record.entry.TowerPlaced; break end
-                    end
-                    if towerType then
-                        local shouldSkip = skipTypesMap[towerType] ~= nil
-                        if not shouldSkip then
-                            rebuildAttempts[x] = (rebuildAttempts[x] or 0) + 1
-                            if not config.MaxRebuildRetry or rebuildAttempts[x] <= config.MaxRebuildRetry then
-                                activeJobs[x] = true
-                                table.insert(jobQueue, { x = x, records = records, priority = GetTowerPriority(towerType), deathTime = tick() })
-                                jobsAdded = true
-                            end
-                        end
-                    end
-                end
-            end
-            if jobsAdded and #jobQueue > 1 then
-                table.sort(jobQueue, function(a, b) return (a.priority == b.priority) and (a.deathTime < b.deathTime) or (a.priority < b.priority) end)
-            end
-            SmartWait(config.RebuildCheckInterval or 0)
-        end
+                    for _, record in ipairs(records) do  
+                        if record.entry.TowerPlaced then towerType = record.entry.TowerPlaced; break end  
+                    end  
+
+                    if towerType then  
+                        local skipRule = skipTypesMap[towerType]  
+                        local shouldSkip = false  
+                        if not shouldSkip then  
+                            rebuildAttempts[x] = (rebuildAttempts[x] or 0) + 1  
+                            if not config.MaxRebuildRetry or rebuildAttempts[x] <= config.MaxRebuildRetry then  
+                                activeJobs[x] = true  
+                                table.insert(jobQueue, { x = x, records = records, priority = GetTowerPriority(towerType), deathTime = tick() })  
+                                jobsAdded = true  
+                            end  
+                        end  
+                    end  
+                end  
+            end  
+            if jobsAdded and #jobQueue > 1 then  
+                table.sort(jobQueue, function(a, b) return (a.priority == b.priority) and (a.deathTime < b.deathTime) or (a.priority < b.priority) end)  
+            end  
+            SmartWait(config.RebuildCheckInterval or 0)  
+        end  
     end)
 end
 local ShopSystem = { Queue = {}, Credits = 0 }
@@ -594,21 +479,21 @@ if CreditsRemote then
     end) 
 end
 
-local _cachedShopDataHandler = nil
 local function GetShopDataHandler()
-    if _cachedShopDataHandler then return _cachedShopDataHandler end
     local ok, result = pcall(function()
         local Client = PlayerScripts:WaitForChild("Client", 5)
         if not Client then return nil end
+
         local PlayerClassModule = Client:FindFirstChild("PlayerClass")
         if not PlayerClassModule then return nil end
+
         local PlayerClass = require(PlayerClassModule)
         local playerWrapper = PlayerClass.GetLocalPlayerWrapper()
-        if playerWrapper then return playerWrapper:GetUpgradeShopDataHandler() end
+        if playerWrapper then
+            return playerWrapper:GetUpgradeShopDataHandler()
+        end
     end)
-    local h = ok and result or nil
-    if h then _cachedShopDataHandler = h end
-    return h
+    return ok and result or nil
 end
 
 local function GetCurrentCredits()
@@ -800,24 +685,20 @@ local function RunMacroRunner()
 
     task.spawn(function()  
         while true do  
-            for hash, tower in pairs(GameModules.TowerClass.GetTowers()) do  
-                local shouldSell = false  
-                if tower.Converted then  
-                    shouldSell = true  
-                end  
-                if not shouldSell and activeReliveConfig then  
-                    local reliveMap = activeReliveConfig.ReliveTowers or {}  
+            if activeReliveConfig then  
+                local reliveMap = activeReliveConfig.ReliveTowers or {}  
+                for hash, tower in pairs(GameModules.TowerClass.GetTowers()) do  
                     local limit = reliveMap[tower.Type]  
                     if limit then  
-                        shouldSell = (limit == -1 and tower.IsRebuilding and tower:IsRebuilding()) or (limit ~= -1 and tower.RebuildsLeft and tower.RebuildsLeft <= limit)
+                        local shouldSell = (limit == -1 and tower.IsRebuilding and tower:IsRebuilding()) or (limit ~= -1 and tower.RebuildsLeft and tower.RebuildsLeft <= limit)
+                        if shouldSell then  
+                            if globalEnv.TDX_Config.UseThreadedRemotes then SafeRemoteCall("FireServer", Remotes.SellTower, hash)  
+                            else pcall(function() Remotes.SellTower:FireServer(hash) end) end  
+                        end  
                     end  
                 end  
-                if shouldSell then  
-                    if globalEnv.TDX_Config.UseThreadedRemotes then SafeRemoteCall("FireServer", Remotes.SellTower, hash)  
-                    else pcall(function() Remotes.SellTower:FireServer(hash) end) end  
-                end  
             end  
-            SmartWait(0.2)  
+            SmartWait(0.5)  
         end  
     end)  
 
@@ -894,8 +775,6 @@ local function RunMacroRunner()
         elseif entry.towermoving then
              local axis = entry.towermoving
              table.insert(towerRecords[axis] or {}, { line = i, entry = entry })
-        elseif entry.PlayerPosition then
-             if globalEnv.TDX_Config.MovePlayer then MovePlayerTo(entry.PlayerPosition) end
         elseif entry.SellTower then
              if globalEnv.TDX_Config.SellByTiming then WaitForTiming(entry, gameUI) end
              SellTowerRetry(tonumber(entry.SellTower))
