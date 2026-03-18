@@ -1,4 +1,3 @@
-```lua
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -1340,4 +1339,3 @@ end
 task.spawn(function()
     pcall(RunMacroRunner)
 end)
-```
