@@ -27,6 +27,22 @@ local function setThreadIdentity(identity)
     end
 end
 
+local function getGlobalEnv()
+    if getgenv then
+        return getgenv()
+    end
+    if getfenv then
+        return getfenv()
+    end
+    return _G
+end
+
+local globalEnv = getGlobalEnv()
+globalEnv.TDX_Config = globalEnv.TDX_Config or {}
+if globalEnv.TDX_Config.UseThreadedRemotes == nil then
+    globalEnv.TDX_Config.UseThreadedRemotes = true
+end
+
 local function safeInvokeAbility(hash, index, pos, targetHash)
     local ok, result = pcall(function()
         return TowerUseAbilityRequest:InvokeServer(hash, index, pos, targetHash)
@@ -485,7 +501,8 @@ local function getEnhancedTarget(pos, towerRange, towerType, ab, cfg)
 
     local isSplash = false
     if cfg then
-        isSplash = hasSplashDamage(cfg)
+        local splash = hasSplashDamage(cfg)
+        isSplash = splash
     end
     local isManualAim = requiresManualAiming(ab, cfg)
 
@@ -871,7 +888,7 @@ RunService.Heartbeat:Connect(function()
             end
 
             if allowUse then
-                if globalEnv and globalEnv.TDX_Config and globalEnv.TDX_Config.UseThreadedRemotes == false then
+                if globalEnv.TDX_Config.UseThreadedRemotes == false then
                     safeInvokeAbility(hash, index, targetPos, targetHash)
                 else
                     safeThreadInvoke(hash, index, targetPos, targetHash)
@@ -895,84 +912,6 @@ task.spawn(function()
         task.wait(0.1)
     until EnemyClass.GetEnemies() and TowerClass.GetTowers()
 
-    populate()
-    hookTC()
-    hookEC()
-    hookAHC()
-
+    processReactiveTowerSkills({})
     Initialized = true
-
-    local progressEvent = dtc and dtc.CustomEvent and dtc.CustomEvent.new()
-    if progressEvent then
-        progressEvent:Connect(newcclosure(function(hash, pi, pct)
-            EProgCache[hash] = { progress = pi + pct, pathIndex = pi }
-        end))
-    end
-
-    local hookedMetatables = {}
-
-    local function hookMovementHandler(hash, mh)
-        if not mh then
-            return
-        end
-        local mt = getrawmetatable(mh)
-        if not mt then
-            return
-        end
-        if hookedMetatables[mt] then
-            local pi = mh.PathIndex or 0
-            EProgCache[hash] = { progress = pi + (mh.PathPercentage or 0), pathIndex = pi }
-            return
-        end
-        hookedMetatables[mt] = true
-        if setreadonly then
-            setreadonly(mt, false)
-        end
-        local origNI = rawget(mt, "__newindex")
-        mt.__newindex = newcclosure(function(t, k, v)
-            if origNI then
-                origNI(t, k, v)
-            else
-                rawset(t, k, v)
-            end
-            if k == "PathIndex" or k == "PathPercentage" then
-                local pi = k == "PathIndex" and v or (rawget(t, "PathIndex") or 0)
-                local pct = k == "PathPercentage" and v or (rawget(t, "PathPercentage") or 0)
-                if progressEvent then
-                    progressEvent:Fire(hash, pi, pct)
-                end
-            end
-        end)
-        local pi = mh.PathIndex or 0
-        EProgCache[hash] = { progress = pi + (mh.PathPercentage or 0), pathIndex = pi }
-    end
-
-    for hash, enemy in _pairs(FEnemies) do
-        hookMovementHandler(hash, enemy.MovementHandler)
-    end
-
-    local _origOnEnemyAdded = onEAdd
-    onEAdd = newcclosure(function(hash, enemy)
-        _origOnEnemyAdded(hash, enemy)
-        hookMovementHandler(hash, enemy.MovementHandler)
-    end)
-
-    while true do
-        task.wait(0.05)
-
-        for k, e in _pairs(FEnemies) do
-            if not e.IsAlive then
-                onERemove(k)
-            end
-        end
-
-        local rawTowers = TowerClass.GetTowers()
-        if rawTowers then
-            for hash, tower in _pairs(rawTowers) do
-                if tower then
-                    FTowers[hash] = tower
-                end
-            end
-        end
-    end
 end)
