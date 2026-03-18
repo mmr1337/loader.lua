@@ -2,15 +2,6 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
-local dtc = getgenv and getgenv().dtc or nil
-newcclosure = newcclosure or function(f) return f end
-setreadonly = setreadonly or function() end
-getrawmetatable = getrawmetatable or getmetatable
-
-local _pairs = pairs
-local _ipairs = ipairs
-local _tick = tick
-
 local LocalPlayer = Players.LocalPlayer
 local PlayerScripts = LocalPlayer:WaitForChild("PlayerScripts")
 local Client = PlayerScripts:WaitForChild("Client")
@@ -20,1444 +11,895 @@ local TowerClass = require(GameClass:WaitForChild("TowerClass"))
 local EnemyClass = require(GameClass:WaitForChild("EnemyClass"))
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-local UseAbilReq = Remotes:WaitForChild("TowerUseAbilityRequest")
-local TAtk = Remotes:WaitForChild("TowerAttack")
-local TChainAtk = Remotes:WaitForChild("TowerChainAttack")
+local TowerUseAbilityRequest = Remotes:WaitForChild("TowerUseAbilityRequest")
+local TowerAttack = Remotes:WaitForChild("TowerAttack")
+local TowerChainAttack = Remotes:WaitForChild("TowerChainAttack")
 
 local Common = ReplicatedStorage:WaitForChild("TDX_Shared"):WaitForChild("Common")
-local TUtils = require(Common:WaitForChild("TowerUtilities"))
+local TowerUtilities = require(Common:WaitForChild("TowerUtilities"))
 local PathHandler = require(Common:WaitForChild("PathHandler"))
 
-local StaticEntityConfigs = Common:WaitForChild("Resources"):WaitForChild("StaticEntities"):WaitForChild("Configs")
+local function setThreadIdentity(identity)
+    if setthreadidentity then
+        setthreadidentity(identity)
+    elseif syn and syn.set_thread_identity then
+        syn.set_thread_identity(identity)
+    end
+end
 
-local function getStaticEntityCfg(entityType)
-    if not entityType then
+local function safeInvokeAbility(hash, index, pos, targetHash)
+    local ok, result = pcall(function()
+        return TowerUseAbilityRequest:InvokeServer(hash, index, pos, targetHash)
+    end)
+    return ok, result
+end
+
+local function safeThreadInvoke(hash, index, pos, targetHash)
+    task.spawn(function()
+        setThreadIdentity(2)
+        safeInvokeAbility(hash, index, pos, targetHash)
+    end)
+end
+
+local directionalTowerTypes = {
+    ["Commander"] = { onlyAbilityIndex = 3 },
+    ["Toxicnator"] = true,
+    ["Ghost"] = true,
+    ["Ice Breaker"] = true,
+    ["Mobster"] = true,
+    ["Golden Mobster"] = true,
+    ["Artillery"] = true,
+    ["Golden Mine Layer"] = true,
+    ["Flame Trooper"] = true,
+    ["Slammer"] = true,
+}
+
+local skipTowerTypes = {
+    ["Helicopter"] = true,
+    ["Cryo Helicopter"] = true,
+    ["Combat Drone"] = true,
+    ["Machine Gunner"] = true,
+}
+
+local skipAirTowers = {
+    ["Ice Breaker"] = true,
+    ["John"] = true,
+    ["Slammer"] = true,
+    ["Mobster"] = true,
+    ["Golden Mobster"] = true
+}
+
+local skipMedicBuffTowers = {
+    ["Refractor"] = true
+}
+
+local towerCooldownState = {}
+local mobsterUsedEnemies = {}
+local mobsterLastUsedTime = {}
+local mobsterDelay = 0.15
+local medicLastUsedTime = {}
+local medicDelay = 0.5
+
+local function getDistance2D(pos1, pos2)
+    local dx = pos1.X - pos2.X
+    local dz = pos1.Z - pos2.Z
+    return math.sqrt(dx * dx + dz * dz)
+end
+
+local function getTowerPos(tower)
+    if not tower then
         return nil
     end
-    local name = tostring(entityType):match("[^.]+$")
-    if not name then
-        return nil
-    end
-    local mod = StaticEntityConfigs:FindFirstChild(name)
-    if not mod then
-        return nil
-    end
-    local ok, result = pcall(require, mod)
+    local ok, result = pcall(function()
+        return tower:GetPosition()
+    end)
     return ok and result or nil
 end
 
-local StaticEntityBehaviorCache = {}
-local SEBE = { Heal = 1, Attack = 2, PathSpawn = 3 }
-
-local function getStaticBehavior(entityType)
-    local k = tostring(entityType)
-    local v = StaticEntityBehaviorCache[k]
-    if v then
-        return v
-    end
-    local cfg = getStaticEntityCfg(entityType)
-    if not cfg then
-        return nil
-    end
-    local behavior
-    if cfg.MultiHealData and cfg.MultiHealData.HealAmountPerTarget then
-        behavior = SEBE.Heal
-    elseif cfg.SpawnPathEntitySequence then
-        behavior = SEBE.PathSpawn
-    elseif cfg.AttackData then
-        behavior = SEBE.Attack
-    end
-    StaticEntityBehaviorCache[k] = behavior
-    return behavior
-end
-
-local CONFIG = {
-    CheckInterval = 0.2,
-    SpecialCheckInterval = 0.2,
-    MobsterDelay = 0.5,
-    CacheInterval = 0.05,
-}
-
-local SETTINGS = {
-    Directional = {
-        ["Toxicnator"] = true,
-        ["Ghost"] = true,
-        ["Artillery"] = true,
-        ["Golden Mine Layer"] = true,
-        ["Slammer"] = true,
-    },
-    SeparateLogic = {
-        ["Medic"] = true,
-        ["Mobster"] = true,
-        ["Golden Mobster"] = true,
-    },
-    SkipGeneralLogic = {
-        ["Helicopter"] = true,
-        ["Cryo Helicopter"] = true,
-        ["Combat Drone"] = true,
-        ["Machine Gunner"] = true,
-        ["Refractor"] = true,
-        ["Psycho Slayer"] = true,
-    },
-    SkipAirTargeting = {
-        ["Slammer"] = true,
-        ["Mobster"] = true,
-        ["Golden Mobster"] = true,
-        ["Toxicnator"] = true,
-    },
-    SkipMedicBuff = {
-        ["Refractor"] = true,
-        ["Mine Layer"] = true,
-        ["Golden Mine Layer"] = true,
-    },
-}
-
-local Initialized = false
-
-local FEnemies = {}
-local EProgCache = {}
-local FTowers = {}
-local TStunCache = {}
-local TKritzCache = {}
-local TRangeCache = {}
-local TDPSCache = {}
-local TStealthCache = {}
-
-local ActEnemies = {}
-
-local NextGenChk = 0
-local NextSpcChk = 0
-local PathEnds = {}
-local MedicPending = {}
-local MEDIC_TO = 0.5
-local MobLastUsed = {}
-local MobPending = {}
-local MOB_TO = 0.4
-
-local Q_CAP = 12
-local SQ_h = table.create(Q_CAP)
-local SQ_i = table.create(Q_CAP)
-local SQ_p = table.create(Q_CAP)
-local SQ_th = table.create(Q_CAP)
-local SQ_ab = table.create(Q_CAP)
-local SQ_hd = 1
-local SQ_tl = 0
-local SQ_sz = 0
-
-local SpcRunning = false
-
-local function setTI(n)
-    if setthreadidentity then
-        setthreadidentity(n)
-    elseif syn and syn.set_thread_identity then
-        syn.set_thread_identity(n)
-    end
-end
-
-local function getTPos(tower)
-    return tower:GetPosition()
-end
-
 local function getRange(tower)
-    local h = tower.Hash
-    local v = TRangeCache[h]
-    if v then
-        return v
-    end
-    v = tower:GetCurrentRange()
-    TRangeCache[h] = v
-    return v
-end
-
-local function getLvls(tower)
-    local lh = tower.LevelHandler
-    if not lh then
-        return 0, 0
-    end
-    return lh.Path1Level, lh.Path2Level
-end
-
-local function getDPS(tower)
-    local h = tower.Hash
-    local v = TDPSCache[h]
-    if v then
-        return v
-    end
-    if not tower.LevelHandler then
+    if not tower then
         return 0
     end
-    local levelStats = tower.LevelHandler:GetLevelStats()
-    local buffStats = tower.BuffHandler and tower.BuffHandler:GetStatMultipliers() or nil
-    local result = TUtils.CalculateDPS(levelStats, buffStats)
-    v = typeof(result) == "number" and result or 0
-    TDPSCache[h] = v
-    return v
+    local ok, result = pcall(function()
+        return tower:GetCurrentRange()
+    end)
+    return ok and typeof(result) == "number" and result or 0
 end
 
-local function getTowerAbilityData(tower)
-    if not tower then
+local function getUpgradeLevels(tower)
+    local p1, p2 = 0, 0
+    if not tower or not tower.LevelHandler then
+        return p1, p2
+    end
+    pcall(function()
+        p1 = tower.LevelHandler:GetLevelOnPath(1) or 0
+    end)
+    pcall(function()
+        p2 = tower.LevelHandler:GetLevelOnPath(2) or 0
+    end)
+    return p1, p2
+end
+
+local function getTowerAbilities(tower)
+    if not tower or not tower.AbilityHandler then
         return nil, nil
     end
+
     local ah = tower.AbilityHandler
-    if not ah then
-        return nil, nil
-    end
     local map = ah.AbilityIndexToNameMap
     local abs = ah.Abilities
+
     if not map or not abs then
         return nil, nil
     end
 
-    local list = table.create(3)
-    local cfgs = table.create(3)
-    local any = false
+    local abilities = table.create(3)
+    local configs = table.create(3)
+    local hasAny = false
 
     for i = 1, 3 do
         local n = map[i]
         local ab = n and abs[n] or nil
-        list[i] = ab
-        cfgs[i] = ab and ab.Config or nil
+        abilities[i] = ab
+        configs[i] = ab and ab.Config or nil
         if ab then
-            any = true
+            hasAny = true
         end
     end
 
-    if not any then
+    if not hasAny then
         return nil, nil
     end
 
-    return list, cfgs
+    return abilities, configs
 end
 
-local function getAbilityAt(tower, index)
-    local list = getTowerAbilityData(tower)
-    if type(list) == "table" then
-        return list[index]
+local function getAbilityByIndex(tower, index)
+    local abilities = getTowerAbilities(tower)
+    if type(abilities) == "table" then
+        return abilities[index]
     end
     return nil
 end
 
-local function canUseAbility(ab)
+local function canUseAbility(tower, index)
+    local ab = getAbilityByIndex(tower, index)
     if not ab then
-        return false
+        return false, nil
     end
-    local ok, result = pcall(function()
+
+    local ok, usable = pcall(function()
         return ab:CanUse()
     end)
-    return ok and result == true
+
+    if not ok then
+        return false, ab
+    end
+
+    return usable == true, ab
 end
 
-local function hasUsableTowerAbility(tower)
-    local list = getTowerAbilityData(tower)
-    if type(list) ~= "table" then
+local function updateCooldownState(hash, index, ab)
+    towerCooldownState[hash] = towerCooldownState[hash] or {}
+    local prev = towerCooldownState[hash][index]
+
+    local cd = 0
+    pcall(function()
+        cd = ab and (ab.CooldownRemaining or 0) or 0
+    end)
+
+    towerCooldownState[hash][index] = {
+        cooldown = cd,
+        stamp = tick()
+    }
+
+    return prev, cd
+end
+
+local function isReadyNow(tower, hash, index)
+    local usable, ab = canUseAbility(tower, index)
+    if not ab then
+        return false, nil
+    end
+
+    updateCooldownState(hash, index, ab)
+    if not usable then
+        return false, ab
+    end
+
+    local cd = 0
+    pcall(function()
+        cd = ab.CooldownRemaining or 0
+    end)
+
+    if cd > 0.05 then
+        return false, ab
+    end
+
+    return true, ab
+end
+
+local function getDPS(tower)
+    if not tower or not tower.LevelHandler then
+        return 0
+    end
+
+    local ok, result = pcall(function()
+        local levelStats = tower.LevelHandler:GetLevelStats()
+        local buffStats = tower.BuffHandler and tower.BuffHandler:GetStatMultipliers() or nil
+        return TowerUtilities.CalculateDPS(levelStats, buffStats)
+    end)
+
+    return ok and typeof(result) == "number" and result or 0
+end
+
+local function isBuffedByMedic(tower)
+    if not tower or not tower.BuffHandler or not tower.BuffHandler.ActiveBuffs then
         return false
     end
-    for i = 1, 3 do
-        if canUseAbility(list[i]) then
+    for _, buff in pairs(tower.BuffHandler.ActiveBuffs) do
+        local buffName = tostring(buff.Name or "")
+        if buffName:match("^MedicKritz") then
             return true
         end
     end
     return false
 end
 
-local function onTAdd(hash, tower)
-    FTowers[hash] = tower
-    TRangeCache[hash] = tower:GetCurrentRange()
-
-    if tower.LevelHandler then
-        local levelStats = tower.LevelHandler:GetLevelStats()
-        local buffStats = tower.BuffHandler and tower.BuffHandler:GetStatMultipliers() or nil
-        local result = TUtils.CalculateDPS(levelStats, buffStats)
-        TDPSCache[hash] = typeof(result) == "number" and result or 0
-    end
-
-    TStealthCache[hash] = tower.Stealth == true
-
-    local bh = tower.BuffHandler
-    if bh then
-        local stunned = bh:IsStunned()
-        local kritz = false
-        for _, b in _pairs(bh.ActiveBuffs or {}) do
-            if b and b.Name and tostring(b.Name):match("^MedicKritz") then
-                kritz = true
-                break
-            end
-        end
-        TStunCache[hash] = stunned
-        TKritzCache[hash] = kritz
-    end
-end
-
-local function onTRemove(hash)
-    FTowers[hash] = nil
-    TStunCache[hash] = nil
-    TKritzCache[hash] = nil
-    TDPSCache[hash] = nil
-    TRangeCache[hash] = nil
-    TStealthCache[hash] = nil
-end
-
-local function onEAdd(hash, enemy)
-    if enemy.IsFakeEnemy then
-        return
-    end
-    FEnemies[hash] = enemy
-    local mh = enemy.MovementHandler
-    if mh then
-        local pi = mh.PathIndex or 0
-        EProgCache[hash] = { progress = pi + (mh.PathPercentage or 0), pathIndex = pi }
-    end
-end
-
-local function onERemove(hash)
-    FEnemies[hash] = nil
-    EProgCache[hash] = nil
-end
-
-local function hookFn(tbl, key, wrapper)
-    local orig = rawget(tbl, key) or tbl[key]
-    if not orig then
-        return
-    end
-
-    if clonefunction and detour_function then
-        local ok, cloned = pcall(clonefunction, orig)
-        if ok and cloned then
-            pcall(detour_function, orig, newcclosure(function(...)
-                return wrapper(cloned, ...)
-            end))
-            return
-        end
-    end
-
-    local mt = getrawmetatable and getrawmetatable(tbl)
-    if mt and setreadonly then
-        pcall(setreadonly, mt, false)
-    end
-    tbl[key] = newcclosure and newcclosure(function(...)
-        return wrapper(orig, ...)
-    end) or function(...)
-        return wrapper(orig, ...)
-    end
-end
-
-local function hookAHC()
-    local ahcPath = GameClass:FindFirstChild("TowerClass")
-        and GameClass.TowerClass:FindFirstChild("AbilityHandlerClass")
-
-    local ahc = nil
-    if ahcPath then
-        local ok, m = pcall(require, ahcPath)
-        if ok then
-            ahc = m
-        end
-    end
-
-    if not ahc then
-        local ok, upvals = pcall(debug.getupvalues, TowerClass.New)
-        if ok and upvals then
-            for _, v in _pairs(upvals) do
-                if type(v) == "table" and rawget(v, "_GenerateAbilities") then
-                    ahc = v
-                    break
-                end
-            end
-        end
-    end
-
-    if not ahc then
+local function canReceiveBuff(tower)
+    if not tower or tower.NoBuffs then
         return false
     end
-
-    local ahcPath2 = GameClass:FindFirstChild("TowerClass")
-        and GameClass.TowerClass:FindFirstChild("AbilityHandlerClass")
-        and GameClass.TowerClass.AbilityHandlerClass:FindFirstChild("AbilityClass")
-
-    local ac = nil
-    if ahcPath2 then
-        local ok, m = pcall(require, ahcPath2)
-        if ok then
-            ac = m
-        end
+    if skipMedicBuffTowers[tower.Type] then
+        return false
     end
-    if not ac then
-        local ok, upvals = pcall(debug.getupvalues, ahc._GenerateAbilities)
-        if ok and upvals then
-            for _, v in _pairs(upvals) do
-                if type(v) == "table" and rawget(v, "BeginCooldown") and rawget(v, "CanUse") then
-                    ac = v
-                    break
-                end
-            end
-        end
-    end
-    if ac then
-        hookFn(ac, "BeginCooldown", function(orig, ab, ...)
-            return orig(ab, ...)
-        end)
-    end
-
     return true
 end
 
-local function hookTC()
-    hookFn(TowerClass, "New", function(orig, ...)
-        local tower = orig(...)
-        if tower and tower.Hash then
-            onTAdd(tower.Hash, tower)
+local function getEnemies()
+    local result = {}
+    for _, e in pairs(EnemyClass.GetEnemies()) do
+        if e and e.IsAlive and not e.IsFakeEnemy then
+            table.insert(result, e)
         end
-        return tower
-    end)
-
-    hookFn(TowerClass, "Destroy", function(orig, tower, ...)
-        local hash = tower and tower.Hash
-        orig(tower, ...)
-        if hash then
-            onTRemove(hash)
-        end
-    end)
-
-    hookFn(TowerClass, "ApplyBuffData", function(orig, tower, ...)
-        orig(tower, ...)
-        local hash = tower and tower.Hash
-        if not hash then
-            return
-        end
-        local bh = tower.BuffHandler
-        if not bh then
-            return
-        end
-        local stunned = bh:IsStunned()
-        local kritz = false
-        for _, b in _pairs(bh.ActiveBuffs or {}) do
-            if b and b.Name and tostring(b.Name):match("^MedicKritz") then
-                kritz = true
-                break
-            end
-        end
-        TStunCache[hash] = stunned
-        TKritzCache[hash] = kritz
-        TRangeCache[hash] = nil
-        TDPSCache[hash] = nil
-    end)
-
-    hookFn(TowerClass, "RemoveBuffData", function(orig, tower, ...)
-        orig(tower, ...)
-        local hash = tower and tower.Hash
-        if not hash then
-            return
-        end
-        local bh = tower.BuffHandler
-        if not bh then
-            return
-        end
-        local stunned = bh:IsStunned()
-        local kritz = false
-        for _, b in _pairs(bh.ActiveBuffs or {}) do
-            if b and b.Name and tostring(b.Name):match("^MedicKritz") then
-                kritz = true
-                break
-            end
-        end
-        TStunCache[hash] = stunned
-        TKritzCache[hash] = kritz
-        TRangeCache[hash] = nil
-        TDPSCache[hash] = nil
-    end)
-
-    hookFn(TowerClass, "SetStealth", function(orig, tower, stealth, ...)
-        orig(tower, stealth, ...)
-        local hash = tower and tower.Hash
-        if hash then
-            TStealthCache[hash] = stealth == true
-        end
-    end)
-
-    hookFn(TowerClass, "Upgrade", function(orig, tower, ...)
-        if not tower then
-            return orig(tower, ...)
-        end
-        local hash = tower.Hash
-        local ok = pcall(orig, tower, ...)
-        if ok and hash then
-            TRangeCache[hash] = nil
-            TDPSCache[hash] = nil
-        end
-    end)
+    end
+    return result
 end
 
-local function hookEC()
-    hookFn(EnemyClass, "New", function(orig, ...)
-        local enemy = orig(...)
-        if enemy and enemy.Hash then
-            onEAdd(enemy.Hash, enemy)
-        end
-        return enemy
-    end)
+local function getEnemyPathPercentage(enemy)
+    if not enemy or not enemy.MovementHandler then
+        return 0
+    end
 
-    hookFn(EnemyClass, "Destroy", function(orig, enemy, ...)
-        local hash = enemy and enemy.Hash
-        orig(enemy, ...)
-        if hash then
-            onERemove(hash)
-        end
-    end)
+    local mh = enemy.MovementHandler
+    local pathPercent = mh.PathPercentage or 0
+
+    if mh.ReverseDirection then
+        pathPercent = 1 - pathPercent
+    end
+
+    return (mh.PathIndex or 0) + pathPercent
 end
 
-local function hookPaths()
-    if type(PathHandler) ~= "table" then
-        return
-    end
-    local ok, positions = pcall(function()
-        return PathHandler.GetEndNodePositions and PathHandler.GetEndNodePositions()
-    end)
-    if ok and type(positions) == "table" then
-        for i, pos in _ipairs(positions) do
-            PathEnds[i] = pos
-        end
-    end
-end
+local function getFarthestEnemyNoRange(options)
+    options = options or {}
+    local excludeAir = options.excludeAir or false
 
-local function populate()
-    local rawE = EnemyClass.GetEnemies()
-    if rawE then
-        for hash, enemy in _pairs(rawE) do
-            if enemy and not enemy.IsFakeEnemy and enemy.IsAlive then
-                onEAdd(hash, enemy)
-            end
-        end
-    end
-
-    local rawT = TowerClass.GetTowers()
-    if rawT then
-        for hash, tower in _pairs(rawT) do
-            if tower then
-                onTAdd(hash, tower)
-            end
-        end
-    end
-end
-
-local function snapEnemies()
-    local arr, n = {}, 0
-    for _, e in _pairs(FEnemies) do
-        if e.IsAlive then
-            n = n + 1
-            arr[n] = e
-        end
-    end
-    return arr
-end
-
-local function enqueue(hash, index, pos, targetHash)
-    local tower = FTowers[hash]
-    if not tower then
-        return
-    end
-    local ab = getAbilityAt(tower, index)
-    if ab then
-        if not canUseAbility(ab) then
-            return
-        end
-        pcall(function()
-            ab:BeginCooldown()
-        end)
-    end
-    if SQ_sz >= Q_CAP then
-        return
-    end
-    SQ_tl = SQ_tl % Q_CAP + 1
-    SQ_h[SQ_tl] = hash
-    SQ_i[SQ_tl] = index
-    SQ_p[SQ_tl] = pos
-    SQ_th[SQ_tl] = targetHash
-    SQ_ab[SQ_tl] = ab
-    SQ_sz = SQ_sz + 1
-end
-
-local function useAbilityNow(hash, index)
-    local tower = FTowers[hash]
-    if not tower then
-        return false
-    end
-    local ab = getAbilityAt(tower, index)
-    if not ab then
-        return false
-    end
-    if not canUseAbility(ab) then
-        return false
-    end
-    pcall(function()
-        ab:BeginCooldown()
-    end)
-    local ok, serverCooldown = UseAbilReq:InvokeServer(hash, index, nil, nil)
-    if ok and serverCooldown then
-        ab.CooldownRemaining = serverCooldown
-        return true
-    end
-    if not ok then
-        pcall(function()
-            ab.CooldownRemaining = 0
-        end)
-    end
-    return false
-end
-
-local function cachePaths()
-    if next(PathEnds) then
-        return
-    end
-    hookPaths()
-end
-
-local MAX_E = 200
-local ES_STRIDE = 24
-local ES_buf = buffer.create(MAX_E * ES_STRIDE)
-local ES_e = table.create(MAX_E)
-local ESSize = 0
-
-local function buildESnap(enemies)
-    local n = 0
-    for _, e in _ipairs(enemies) do
-        local ep = e:GetPosition()
-        if not ep then
+    local candidates = {}
+    for _, enemy in ipairs(getEnemies()) do
+        if not enemy.GetPosition then
             continue
         end
-        local ec = EProgCache[e.Hash]
-        local base = n * ES_STRIDE
-        buffer.writef32(ES_buf, base, ep.X)
-        buffer.writef32(ES_buf, base + 4, ep.Z)
-        buffer.writef32(ES_buf, base + 8, e.HealthHandler and e.HealthHandler:GetMaxHealth() or 0)
-        buffer.writef32(ES_buf, base + 12, ec and ec.progress or 0)
-        buffer.writeu32(ES_buf, base + 16, e.BountyDisplayHandler and e.BountyDisplayHandler.BountyCount or 0)
-        buffer.writeu8(ES_buf, base + 20, e.IsAirUnit and 1 or 0)
-        buffer.writeu8(ES_buf, base + 21, e.Stealth and 1 or 0)
-        n = n + 1
-        ES_e[n] = e
-    end
-    for i = n + 1, ESSize do
-        ES_e[i] = nil
-    end
-    ESSize = n
-end
+        if excludeAir and enemy.IsAirUnit then
+            continue
+        end
 
-local function getFarEnemy(pos, range, noAir)
-    local rsq = range * range
-    local px, pz = pos.X, pos.Z
-    local best, bestPrg = nil, -1
-    for i = 0, ESSize - 1 do
-        local base = i * ES_STRIDE
-        if noAir and buffer.readu8(ES_buf, base + 20) == 1 then
-            continue
-        end
-        local dx = buffer.readf32(ES_buf, base) - px
-        local dz = buffer.readf32(ES_buf, base + 4) - pz
-        if dx * dx + dz * dz > rsq then
-            continue
-        end
-        local prg = buffer.readf32(ES_buf, base + 12)
-        if prg > bestPrg then
-            bestPrg = prg
-            best = i
-        end
+        table.insert(candidates, {
+            enemy = enemy,
+            pathPercent = getEnemyPathPercentage(enemy)
+        })
     end
-    if best then
-        local base = best * ES_STRIDE
-        return Vector3.new(buffer.readf32(ES_buf, base), 0, buffer.readf32(ES_buf, base + 4))
-    end
-    return nil
-end
 
-local function getStrongEnemy(pos, range, noAir)
-    local rsq = range * range
-    local px, pz = pos.X, pos.Z
-    local best, bestHP = nil, -1
-    for i = 0, ESSize - 1 do
-        local base = i * ES_STRIDE
-        if noAir and buffer.readu8(ES_buf, base + 20) == 1 then
-            continue
-        end
-        local dx = buffer.readf32(ES_buf, base) - px
-        local dz = buffer.readf32(ES_buf, base + 4) - pz
-        if dx * dx + dz * dz > rsq then
-            continue
-        end
-        local hp = buffer.readf32(ES_buf, base + 8)
-        if hp > bestHP then
-            bestHP = hp
-            best = i
-        end
-    end
-    if best then
-        local base = best * ES_STRIDE
-        return Vector3.new(buffer.readf32(ES_buf, base), 0, buffer.readf32(ES_buf, base + 4))
-    end
-    return nil
-end
-
-local function getRelicTgt()
-    local bestPrg, bestPath = -1, 1
-    for i = 0, ESSize - 1 do
-        local base = i * ES_STRIDE
-        if buffer.readu8(ES_buf, base + 20) == 1 then
-            continue
-        end
-        local prg = buffer.readf32(ES_buf, base + 12)
-        if prg > bestPrg then
-            bestPrg = prg
-            local e = ES_e[i + 1]
-            local ec = e and EProgCache[e.Hash]
-            local pi = ec and ec.pathIndex or 1
-            if pi >= 1 then
-                bestPath = pi
-            end
-        end
-    end
-    local ok, endNode = pcall(PathHandler.GetEnd, bestPath)
-    if ok and endNode then
-        return endNode.Position
-    end
-    return PathEnds[1]
-end
-
-local function hasEnemy()
-    return ESSize > 0
-end
-
-local function hasStealthInRange(pos, radius)
-    local rsq = radius * radius
-    local px, pz = pos.X, pos.Z
-    for i = 0, ESSize - 1 do
-        local base = i * ES_STRIDE
-        if buffer.readu8(ES_buf, base + 21) == 0 then
-            continue
-        end
-        local dx = buffer.readf32(ES_buf, base) - px
-        local dz = buffer.readf32(ES_buf, base + 4) - pz
-        if dx * dx + dz * dz <= rsq then
-            return true
-        end
-    end
-    return false
-end
-
-local function getBestStealthTgt(selfHash)
-    local bestHash, bestDPS, bestDistSq = nil, -1, math.huge
-    for h, t in _pairs(FTowers) do
-        if h == selfHash or not t.IsAlive then
-            continue
-        end
-        if TStealthCache[h] then
-            continue
-        end
-        local tp = getTPos(t)
-        if not tp then
-            continue
-        end
-        local dps = TDPSCache[h] or getDPS(t)
-        if dps < bestDPS then
-            continue
-        end
-        local minDsq = math.huge
-        for _, e in _pairs(FEnemies) do
-            if not e.IsAlive or not e.AbilityHandler then
-                continue
-            end
-            local ep = e:GetPosition()
-            if not ep then
-                continue
-            end
-            local dx = ep.X - tp.X
-            local dz = ep.Z - tp.Z
-            local dsq = dx * dx + dz * dz
-            local eRange = e.AbilityHandler.AttackRange or 10
-            if dsq <= eRange * eRange and dsq < minDsq then
-                minDsq = dsq
-            end
-        end
-        if minDsq == math.huge then
-            continue
-        end
-        if dps > bestDPS or (dps == bestDPS and minDsq < bestDistSq) then
-            bestDPS = dps
-            bestDistSq = minDsq
-            bestHash = h
-        end
-    end
-    return bestHash
-end
-
-local function checkTowers(selfHash, pos, radius, checkHeal, checkStun, selfOnly)
-    if selfOnly then
-        local t = FTowers[selfHash]
-        if not t then
-            return false
-        end
-        if checkHeal then
-            local hh = t.HealthHandler
-            if hh and hh:GetHealth() < hh:GetMaxHealth() then
-                return true
-            end
-        end
-        if checkStun and TStunCache[selfHash] then
-            return true
-        end
-        return false
-    end
-    local rsq = radius and radius * radius or nil
-    local px = pos and pos.X or 0
-    local pz = pos and pos.Z or 0
-    for h, t in _pairs(FTowers) do
-        if not t.IsAlive then
-            continue
-        end
-        if rsq and h ~= selfHash then
-            local tp = getTPos(t)
-            if not tp then
-                continue
-            end
-            local dx = tp.X - px
-            local dz = tp.Z - pz
-            if dx * dx + dz * dz > rsq then
-                continue
-            end
-        end
-        if checkHeal then
-            local hh = t.HealthHandler
-            if hh and hh:GetHealth() < hh:GetMaxHealth() then
-                return true
-            end
-        end
-        if checkStun and TStunCache[h] then
-            return true
-        end
-    end
-    return false
-end
-
-local function isMedicBuff(tower)
-    return TKritzCache[tower.Hash] == true
-end
-
-local function getMedicTgt(medicTower, medicHash)
-    local medicPos = getTPos(medicTower)
-    if not medicPos then
+    if #candidates == 0 then
         return nil
     end
-    local medicRangeSq = getRange(medicTower) ^ 2
-    local bestHash, bestDPS = nil, -1
-    for hash, tower in _pairs(FTowers) do
-        if hash == medicHash or not tower.IsAlive then
-            continue
-        end
-        if SETTINGS.SkipMedicBuff[tower.Type or ""] then
-            continue
-        end
-        if isMedicBuff(tower) then
-            continue
-        end
-        local tPos = getTPos(tower)
-        if not tPos then
-            continue
-        end
-        local dx = tPos.X - medicPos.X
-        local dz = tPos.Z - medicPos.Z
-        if dx * dx + dz * dz > medicRangeSq then
-            continue
-        end
-        local dps = TDPSCache[hash] or getDPS(tower)
-        if dps > bestDPS then
-            bestDPS = dps
-            bestHash = hash
-        end
-    end
-    return bestHash
+
+    table.sort(candidates, function(a, b)
+        return a.pathPercent > b.pathPercent
+    end)
+
+    return candidates[1].enemy:GetPosition()
 end
 
-local function needsHeal(medicHash)
-    for h, t in _pairs(FTowers) do
-        if h == medicHash or not t.IsAlive then
+local function getFarthestEnemyInRangeByPath(pos, range, options)
+    options = options or {}
+    local excludeAir = options.excludeAir or false
+
+    local candidates = {}
+    for _, enemy in ipairs(getEnemies()) do
+        if not enemy.GetPosition then
             continue
         end
-        if t.v10 and t.v10.NoHeal then
+        if excludeAir and enemy.IsAirUnit then
             continue
         end
-        local hh = t.HealthHandler
-        if not hh then
+
+        local ePos = enemy:GetPosition()
+        if getDistance2D(ePos, pos) <= range then
+            table.insert(candidates, {
+                enemy = enemy,
+                position = ePos,
+                pathPercent = getEnemyPathPercentage(enemy)
+            })
+        end
+    end
+
+    if #candidates == 0 then
+        return nil
+    end
+
+    table.sort(candidates, function(a, b)
+        return a.pathPercent > b.pathPercent
+    end)
+
+    return candidates[1].position
+end
+
+local function tacticalTarget(pos, range, options)
+    options = options or {}
+    local mode = options.mode or "nearest"
+    local excludeAir = options.excludeAir or false
+    local usedEnemies = options.usedEnemies
+    local markUsed = options.markUsed or false
+
+    local candidates = {}
+    for _, enemy in ipairs(getEnemies()) do
+        if not enemy.GetPosition then
             continue
         end
-        if hh:GetHealth() < hh:GetMaxHealth() then
+        if excludeAir and enemy.IsAirUnit then
+            continue
+        end
+
+        local ePos = enemy:GetPosition()
+        if getDistance2D(ePos, pos) > range then
+            continue
+        end
+
+        if usedEnemies then
+            local id = tostring(enemy)
+            if usedEnemies[id] then
+                continue
+            end
+        end
+
+        table.insert(candidates, enemy)
+    end
+
+    if #candidates == 0 then
+        return nil
+    end
+
+    local chosen = nil
+    if mode == "maxhp" then
+        local maxHP = -1
+        for _, enemy in ipairs(candidates) do
+            if enemy.HealthHandler then
+                local hp = enemy.HealthHandler:GetMaxHealth()
+                if hp > maxHP then
+                    maxHP = hp
+                    chosen = enemy
+                end
+            end
+        end
+    elseif mode == "currenthp" then
+        local maxCurrentHP = -1
+        for _, enemy in ipairs(candidates) do
+            if enemy.HealthHandler then
+                local currentHP = enemy.HealthHandler:GetHealth()
+                if currentHP > maxCurrentHP then
+                    maxCurrentHP = currentHP
+                    chosen = enemy
+                end
+            end
+        end
+    elseif mode == "random_weighted" then
+        table.sort(candidates, function(a, b)
+            local hpA = a.HealthHandler and a.HealthHandler:GetMaxHealth() or 0
+            local hpB = b.HealthHandler and b.HealthHandler:GetMaxHealth() or 0
+            return hpA > hpB
+        end)
+        if math.random(1, 10) <= 3 then
+            chosen = candidates[1]
+        else
+            chosen = candidates[math.random(1, #candidates)]
+        end
+    else
+        chosen = candidates[1]
+    end
+
+    if chosen and markUsed and usedEnemies then
+        usedEnemies[tostring(chosen)] = true
+    end
+
+    return chosen and chosen:GetPosition() or nil
+end
+
+local function hasSplashDamage(cfg)
+    if not cfg then
+        return false, 0
+    end
+    if cfg.ProjectileHitData then
+        local hitData = cfg.ProjectileHitData
+        if hitData.IsSplash and hitData.SplashRadius and hitData.SplashRadius > 0 then
+            return true, hitData.SplashRadius
+        end
+    end
+    if cfg.HasRadiusEffect and cfg.EffectRadius and cfg.EffectRadius > 0 then
+        return true, cfg.EffectRadius
+    end
+    return false, 0
+end
+
+local function getAbilityRange(ab, cfg, defaultRange)
+    if cfg then
+        if cfg.ManualAimInfiniteRange == true then
+            return math.huge
+        end
+        if cfg.ManualAimCustomRange and cfg.ManualAimCustomRange > 0 then
+            return cfg.ManualAimCustomRange
+        end
+        if cfg.Range and cfg.Range > 0 then
+            return cfg.Range
+        end
+        if cfg.CustomQueryData and cfg.CustomQueryData.Range then
+            return cfg.CustomQueryData.Range
+        end
+    end
+    if ab then
+        if ab.ManualAimInfiniteRange == true then
+            return math.huge
+        end
+        if ab.ManualAimCustomRange and ab.ManualAimCustomRange > 0 then
+            return ab.ManualAimCustomRange
+        end
+    end
+    return defaultRange
+end
+
+local function requiresManualAiming(ab, cfg)
+    if cfg then
+        if cfg.IsManualAimAtGround == true or cfg.IsManualAimAtPath == true then
             return true
         end
+    end
+    if ab then
+        return ab.IsManualAimAtGround == true or ab.IsManualAimAtPath == true
     end
     return false
 end
 
-local function getCMedicTgt(hash)
-    local best, bestDPS = nil, -1
-    for h, t in _pairs(FTowers) do
-        if h == hash or not t.IsAlive then
-            continue
-        end
-        if t.v10 and t.v10.NoHeal then
-            continue
-        end
-        local tp = getTPos(t)
-        if not tp then
-            continue
-        end
-        local hh = t.HealthHandler
-        if not hh then
-            continue
-        end
-        local dps = TDPSCache[h] or getDPS(t)
-        if dps > bestDPS then
-            bestDPS = dps
-            best = tp
-        end
+local function getEnhancedTarget(pos, towerRange, towerType, ab, cfg)
+    local options = { excludeAir = skipAirTowers[towerType] or false }
+    local effectiveRange = getAbilityRange(ab, cfg, towerRange)
+
+    local isSplash = false
+    if cfg then
+        isSplash = hasSplashDamage(cfg)
     end
-    return best
+    local isManualAim = requiresManualAiming(ab, cfg)
+
+    if isSplash or isManualAim then
+        return getFarthestEnemyInRangeByPath(pos, effectiveRange, options)
+    end
+
+    return getFarthestEnemyInRangeByPath(pos, effectiveRange, options)
 end
 
-local function getMobTgt(tower)
-    local pos = getTPos(tower)
+local function getMobsterTarget(tower, hash, path)
+    local pos = getTowerPos(tower)
+    local range = getRange(tower)
     if not pos then
         return nil
     end
-    local rsq = getRange(tower) ^ 2
-    local px, pz = pos.X, pos.Z
-    local now = _tick()
-    for id, data in _pairs(MobPending) do
-        local e = data.enemy
-        local hb = e and e.BountyDisplayHandler and e.BountyDisplayHandler.BountyCount > 0
-        if hb or now - data.time > MOB_TO or not (e and e.IsAlive) then
-            MobPending[id] = nil
-        end
-    end
-    local bE, bHP, bPrg = nil, -1, -1
-    for i = 0, ESSize - 1 do
-        local base = i * ES_STRIDE
-        if buffer.readu8(ES_buf, base + 20) == 1 then
-            continue
-        end
-        if buffer.readu32(ES_buf, base + 16) > 0 then
-            continue
-        end
-        local enemy = ES_e[i + 1]
-        local id = enemy and enemy.Hash
-        if not id then
-            continue
-        end
-        if MobPending[id] then
-            continue
-        end
-        local dx = buffer.readf32(ES_buf, base) - px
-        local dz = buffer.readf32(ES_buf, base + 4) - pz
-        if dx * dx + dz * dz > rsq then
-            continue
-        end
-        local hp = buffer.readf32(ES_buf, base + 8)
-        local prg = buffer.readf32(ES_buf, base + 12)
-        if hp > bHP or (hp == bHP and prg > bPrg) then
-            bHP = hp
-            bPrg = prg
-            bE = enemy
-        end
-    end
-    return bE
-end
 
-local function procMobster(tower, hash, now)
-    if not hasUsableTowerAbility(tower) then
-        return
-    end
-    if MobLastUsed[hash] and now - MobLastUsed[hash] < CONFIG.MobsterDelay then
-        return
-    end
-    local list = getTowerAbilityData(tower)
-    if type(list) ~= "table" then
-        return
-    end
-    for i = 1, 3 do
-        local ab = list[i]
-        if canUseAbility(ab) then
-            local e = getMobTgt(tower)
-            if e then
-                local ep = e:GetPosition()
-                if ep then
-                    enqueue(hash, i, ep, nil)
-                    MobPending[e.Hash] = { enemy = e, time = now }
-                    MobLastUsed[hash] = now
-                    break
-                end
-            end
-        end
-    end
-end
+    mobsterUsedEnemies[hash] = mobsterUsedEnemies[hash] or {}
 
-local function procGeneric(tower, hash, now)
-    local list, cfgs = getTowerAbilityData(tower)
-    if type(list) ~= "table" or not cfgs then
-        return
-    end
+    if path == 2 then
+        local candidates = {}
+        local maxHP = -1
 
-    local usableAny = false
-    for i = 1, 3 do
-        if canUseAbility(list[i]) then
-            usableAny = true
-            break
-        end
-    end
-    if not usableAny then
-        return
-    end
-
-    local pos = getTPos(tower)
-    local range = getRange(tower)
-
-    for i = 1, 3 do
-        local ab = list[i]
-        if not ab or not canUseAbility(ab) then
-            continue
-        end
-        local cfg = cfgs[i] or ab.Config
-        if not cfg then
-            continue
-        end
-
-        local tPos, allow = nil, false
-
-        if cfg.SpawnStaticEntityData then
-            local sed = cfg.SpawnStaticEntityData
-            local entry = (type(sed) == "table" and sed[1]) and sed[1] or sed
-            local entityType = entry and (entry.StaticEntityType or entry.Name)
-            local beh = entityType and getStaticBehavior(entityType)
-            if beh == SEBE.Heal then
-                local now2 = _tick()
-                local pd = MedicPending[hash]
-                if pd then
-                    if now2 - pd.time > MEDIC_TO then
-                        MedicPending[hash] = nil
-                    else
-                        allow = false
-                    end
-                end
-                if not MedicPending[hash] and needsHeal(hash) then
-                    local th = getCMedicTgt(hash)
-                    if th then
-                        enqueue(hash, i, nil, th)
-                        MedicPending[hash] = { time = now2 }
-                        break
-                    end
-                end
-            elseif beh == SEBE.Attack or beh == SEBE.PathSpawn then
-                local cr = cfg.ManualAimCustomRange or (cfg.ManualAimInfiniteRange and 9999 or range)
-                if cfg.IsManualAimAtPath or cfg.IsManualAimAtGround then
-                    if cfg.ManualAimInfiniteRange then
-                        tPos = getRelicTgt()
-                    elseif pos then
-                        tPos = getFarEnemy(pos, cr, false)
-                    end
-                    allow = tPos ~= nil
-                else
-                    allow = hasEnemy()
-                end
-            end
-        end
-
-        if cfg.SpawnPathEntityData and hasEnemy() then
-            if cfg.IsManualAimAtPath then
-                if cfg.ManualAimInfiniteRange then
-                    tPos = getRelicTgt()
-                elseif pos then
-                    tPos = getFarEnemy(pos, range, false)
-                end
-                allow = tPos ~= nil
-            else
-                allow = true
-            end
-        end
-
-        if not allow and cfg.HasRevealEffect and pos then
-            local radius = cfg.UseTowerRangeForRadius and range or (cfg.EffectRadius or range)
-            allow = hasStealthInRange(pos, radius)
-        end
-
-        if cfg.ProjectileHitDataAffectTowers then
-            local phd = cfg.ProjectileHitData
-            if phd and phd.TowerStealthDuration then
-                local th = getBestStealthTgt(hash)
-                if th then
-                    enqueue(hash, i, nil, th)
-                    break
-                end
-            elseif not allow then
-                allow = hasEnemy()
-                if allow and (cfg.IsManualAimAtGround or cfg.IsManualAimAtPath) then
-                    if cfg.ManualAimInfiniteRange then
-                        tPos = getRelicTgt()
-                    elseif pos then
-                        tPos = getFarEnemy(pos, range, false)
-                    end
-                    allow = tPos ~= nil
-                end
-            end
-        end
-
-        if not allow and cfg.RadiusDamage and cfg.EffectRadius and pos then
-            local rsq = cfg.EffectRadius * cfg.EffectRadius
-            local px, pz = pos.X, pos.Z
-            for ei = 0, ESSize - 1 do
-                local base = ei * ES_STRIDE
-                local dx = buffer.readf32(ES_buf, base) - px
-                local dz = buffer.readf32(ES_buf, base + 4) - pz
-                if dx * dx + dz * dz <= rsq then
-                    allow = true
-                    break
-                end
-            end
-        end
-
-        if not allow and cfg.ProjectileHitData and not cfg.ProjectileHitDataAffectTowers then
-            local phd = cfg.ProjectileHitData
-            local hasEffect = phd.IsSplash or phd.SpawnStaticEntityData
-            if hasEffect and (cfg.IsManualAimAtPath or cfg.IsManualAimAtGround) then
-                if cfg.ManualAimInfiniteRange then
-                    tPos = getRelicTgt()
-                elseif pos then
-                    tPos = getFarEnemy(pos, cfg.ManualAimCustomRange or range, false)
-                end
-                allow = tPos ~= nil
-            elseif hasEffect and pos then
-                tPos = getFarEnemy(pos, range, false)
-                allow = tPos ~= nil
-            end
-        end
-
-        if not allow and cfg.HasRadiusEffect and pos then
-            local selfOnly = cfg.TargetSelf == true
-            local radius = cfg.UseTowerRangeForRadius and range or (cfg.EffectRadius or range)
-            if cfg.TowerBuffNames then
-                allow = true
-            end
-            if not allow and (cfg.HealPercentage or cfg.HealAmount or cfg.Unstun) then
-                allow = checkTowers(
-                    hash,
-                    pos,
-                    radius,
-                    cfg.HealPercentage ~= nil or cfg.HealAmount ~= nil,
-                    cfg.Unstun == true,
-                    selfOnly
-                )
-            end
-        end
-
-        if allow then
-            enqueue(hash, i, tPos, nil)
-            break
-        end
-    end
-end
-
-local function procAttack(attackHash, now)
-    local atTower = FTowers[attackHash]
-    if not atTower then
-        return
-    end
-    local atPos = getTPos(atTower)
-    if not atPos then
-        return
-    end
-
-    for hash, tower in _pairs(FTowers) do
-        if hash == attackHash or not tower.IsAlive then
-            continue
-        end
-        local tp = getTPos(tower)
-        if not tp then
-            continue
-        end
-        local dx = tp.X - atPos.X
-        local dz = tp.Z - atPos.Z
-        if dx * dx + dz * dz > getRange(tower) ^ 2 then
-            continue
-        end
-
-        local tType = tower.Type
-        if tType == "Medic" then
-            local _, p2 = getLvls(tower)
-            if p2 < 4 then
+        for _, enemy in ipairs(getEnemies()) do
+            if not enemy.GetPosition then
                 continue
             end
-            if MedicPending[hash] then
-                local pd = MedicPending[hash]
-                local targetTower = pd.tower
-                local timedOut = now - pd.time > MEDIC_TO
-                local buffed = targetTower and targetTower.IsAlive and isMedicBuff(targetTower)
-                if buffed or timedOut then
-                    MedicPending[hash] = nil
-                else
+            if enemy.IsAirUnit then
+                continue
+            end
+
+            local ePos = enemy:GetPosition()
+            if getDistance2D(ePos, pos) > range then
+                continue
+            end
+
+            local id = tostring(enemy)
+            if mobsterUsedEnemies[hash][id] then
+                continue
+            end
+
+            local hp = enemy.HealthHandler and enemy.HealthHandler:GetMaxHealth() or 0
+
+            if hp > maxHP then
+                maxHP = hp
+                candidates = {{enemy = enemy, hp = hp, pathPercent = getEnemyPathPercentage(enemy)}}
+            elseif hp == maxHP then
+                table.insert(candidates, {enemy = enemy, hp = hp, pathPercent = getEnemyPathPercentage(enemy)})
+            end
+        end
+
+        if #candidates == 0 then
+            return nil
+        end
+
+        if #candidates > 1 then
+            table.sort(candidates, function(a, b)
+                return a.pathPercent > b.pathPercent
+            end)
+        end
+
+        local chosen = candidates[1].enemy
+        mobsterUsedEnemies[hash][tostring(chosen)] = true
+        return chosen:GetPosition()
+    else
+        for _, enemy in ipairs(getEnemies()) do
+            if not enemy.GetPosition then
+                continue
+            end
+            if enemy.IsAirUnit then
+                continue
+            end
+
+            local ePos = enemy:GetPosition()
+            if getDistance2D(ePos, pos) <= range then
+                return ePos
+            end
+        end
+        return nil
+    end
+end
+
+local function getCommanderTarget()
+    local candidates = {}
+    for _, e in ipairs(getEnemies()) do
+        if not e.IsAirUnit then
+            table.insert(candidates, e)
+        end
+    end
+
+    if #candidates == 0 then
+        return nil
+    end
+
+    table.sort(candidates, function(a, b)
+        local hpA = a.HealthHandler and a.HealthHandler:GetMaxHealth() or 0
+        local hpB = b.HealthHandler and b.HealthHandler:GetMaxHealth() or 0
+        return hpA > hpB
+    end)
+
+    local chosen
+    if math.random(1, 10) <= 3 then
+        chosen = candidates[1]
+    else
+        chosen = candidates[math.random(1, #candidates)]
+    end
+
+    return chosen and chosen:GetPosition() or nil
+end
+
+local function getBestMedicTarget(medicTower, ownedTowers)
+    local medicPos = getTowerPos(medicTower)
+    local medicRange = getRange(medicTower)
+    if not medicPos then
+        return nil
+    end
+
+    local bestHash, bestDPS = nil, -1
+
+    for hash, tower in pairs(ownedTowers) do
+        if tower == medicTower then
+            continue
+        end
+        if canReceiveBuff(tower) and not isBuffedByMedic(tower) then
+            local towerPos = getTowerPos(tower)
+            if towerPos and getDistance2D(towerPos, medicPos) <= medicRange then
+                local dps = getDPS(tower)
+                if dps > bestDPS then
+                    bestDPS = dps
+                    bestHash = hash
+                end
+            end
+        end
+    end
+    return bestHash
+end
+
+local function cleanupDeadEnemiesFromCache()
+    for hash, enemies in pairs(mobsterUsedEnemies) do
+        for enemyId, _ in pairs(enemies) do
+            for _, e in pairs(EnemyClass.GetEnemies()) do
+                if tostring(e) == enemyId and not e:Alive() then
+                    enemies[enemyId] = nil
+                    break
+                end
+            end
+        end
+    end
+end
+
+local function processReactiveTowerSkills(attackData)
+    local ownedTowers = TowerClass.GetTowers() or {}
+
+    for _, data in ipairs(attackData) do
+        local attackingTowerHash = data.X
+        local attackingTower = ownedTowers[attackingTowerHash]
+        if not attackingTower then
+            continue
+        end
+
+        task.spawn(function()
+            setThreadIdentity(2)
+
+            for hash, tower in pairs(ownedTowers) do
+                if hash == attackingTowerHash then
                     continue
                 end
-            end
-            local list = getTowerAbilityData(tower)
-            if type(list) ~= "table" then
-                continue
-            end
-            for i = 1, 3 do
-                local ab = list[i]
-                if canUseAbility(ab) then
-                    local th = getMedicTgt(tower, hash)
-                    if th then
-                        local targetTower = FTowers[th]
-                        enqueue(hash, i, nil, th)
-                        MedicPending[hash] = { tower = targetTower, time = now }
-                        break
+                if not tower or not tower.AbilityHandler then
+                    continue
+                end
+
+                local towerPos = getTowerPos(tower)
+                local attackingPos = getTowerPos(attackingTower)
+                if not towerPos or not attackingPos then
+                    continue
+                end
+
+                local distance = getDistance2D(towerPos, attackingPos)
+                local towerRange = getRange(tower)
+
+                if distance <= towerRange then
+                    if tower.Type == "EDJ" then
+                        local ready = isReadyNow(tower, hash, 1)
+                        if ready then
+                            safeThreadInvoke(hash, 1, nil, nil)
+                        end
+                    elseif tower.Type == "Commander" then
+                        local only = 3
+                        local ready = isReadyNow(tower, hash, only)
+                        if ready then
+                            local pos = getCommanderTarget()
+                            if pos then
+                                safeThreadInvoke(hash, only, pos, nil)
+                            end
+                        end
+                    elseif tower.Type == "Medic" then
+                        local _, p2 = getUpgradeLevels(tower)
+                        if p2 >= 4 then
+                            local now = tick()
+                            if not medicLastUsedTime[hash] or now - medicLastUsedTime[hash] >= medicDelay then
+                                local targetHash = getBestMedicTarget(tower, ownedTowers)
+                                if targetHash then
+                                    for index = 1, 3 do
+                                        local ready = isReadyNow(tower, hash, index)
+                                        if ready then
+                                            safeThreadInvoke(hash, index, nil, targetHash)
+                                            medicLastUsedTime[hash] = now
+                                            break
+                                        end
+                                    end
+                                end
+                            end
+                        end
                     end
                 end
             end
-        end
+        end)
     end
 end
 
-TAtk.OnClientEvent:Connect(newcclosure(function(data)
-    if not Initialized or not next(FTowers) then
-        return
-    end
-    local now = _tick()
-    task.spawn(function()
-        setTI(2)
-        for _, d in _ipairs(data) do
-            if d and d.X then
-                procAttack(d.X, now)
+TowerAttack.OnClientEvent:Connect(processReactiveTowerSkills)
+
+if TowerChainAttack then
+    TowerChainAttack.OnClientEvent:Connect(function(data)
+        local converted = {}
+        for _, v in ipairs(data) do
+            if v and v[1] then
+                table.insert(converted, { X = v[1] })
             end
         end
+        processReactiveTowerSkills(converted)
     end)
-end))
+end
 
-TChainAtk.OnClientEvent:Connect(newcclosure(function(data)
-    if not Initialized or not next(FTowers) then
-        return
-    end
-    local now = _tick()
-    task.spawn(function()
-        setTI(2)
-        for _, d in _ipairs(data) do
-            if d and d[1] then
-                procAttack(d[1], now)
-            end
-        end
-    end)
-end))
+local skillsThisFrame = 0
+local MAX_SKILLS_PER_FRAME = 8
 
-RunService.RenderStepped:Connect(newcclosure(function()
+RunService.Heartbeat:Connect(function()
     if not Initialized then
         return
     end
-    local now = _tick()
 
-    if not next(FTowers) then
-        return
-    end
+    skillsThisFrame = 0
+    cleanupDeadEnemiesFromCache()
 
-    if now < NextSpcChk then
-        return
-    end
-    NextSpcChk = now + CONFIG.SpecialCheckInterval
-    if SpcRunning then
-        return
-    end
+    local ownedTowers = TowerClass.GetTowers() or {}
+    local now = tick()
 
-    SpcRunning = true
-    task.spawn(function()
-        setTI(2)
-        for hash, tower in _pairs(FTowers) do
-            if not tower.IsAlive then
-                continue
-            end
-            local tType = tower.Type
-            if not SETTINGS.SeparateLogic[tType] then
-                continue
-            end
-            if tType == "Medic" then
-                continue
-            end
-            if not hasUsableTowerAbility(tower) then
-                continue
-            end
-            if tType == "Mobster" or tType == "Golden Mobster" then
-                local _, p2 = getLvls(tower)
-                if p2 >= 3 and p2 <= 5 then
-                    procMobster(tower, hash, now)
-                end
-            else
-                procGeneric(tower, hash, now)
-            end
-        end
-        SpcRunning = false
-    end)
-end))
-
-RunService.Heartbeat:Connect(newcclosure(function()
-    if not Initialized then
-        return
-    end
-    local now = _tick()
-
-    if not next(FTowers) then
-        return
-    end
-    if now < NextGenChk then
-        return
-    end
-    NextGenChk = now + CONFIG.CheckInterval
-
-    cachePaths()
-    buildESnap(ActEnemies)
-
-    local revealFired = false
-    local stealthExists = false
-    for i = 0, ESSize - 1 do
-        if buffer.readu8(ES_buf, i * ES_STRIDE + 21) == 1 then
-            stealthExists = true
+    for hash, tower in pairs(ownedTowers) do
+        if skillsThisFrame >= MAX_SKILLS_PER_FRAME then
             break
         end
-    end
 
-    for hash, tower in _pairs(FTowers) do
-        if not tower.IsAlive then
-            continue
-        end
-        local tType = tower.Type
-        if SETTINGS.SeparateLogic[tType] or SETTINGS.SkipGeneralLogic[tType] then
+        if not tower or not tower.AbilityHandler or not tower.IsAlive then
             continue
         end
 
-        local list, cfgs = getTowerAbilityData(tower)
-        if type(list) ~= "table" then
+        if skipTowerTypes[tower.Type] then
             continue
         end
 
-        local usableAny = false
-        for i = 1, 3 do
-            if canUseAbility(list[i]) then
-                usableAny = true
-                break
-            end
-        end
-        if not usableAny then
-            continue
-        end
-
-        local pos = getTPos(tower)
+        local p1, p2 = getUpgradeLevels(tower)
+        local pos = getTowerPos(tower)
+        local range = getRange(tower)
         if not pos then
             continue
         end
-        local range = getRange(tower)
-        local noAir = SETTINGS.SkipAirTargeting[tType]
 
-        for idx = 1, 3 do
-            local ab = list[idx]
-            if not canUseAbility(ab) then
+        local abilities, configs = getTowerAbilities(tower)
+        if not abilities then
+            continue
+        end
+
+        for index = 1, 3 do
+            if skillsThisFrame >= MAX_SKILLS_PER_FRAME then
+                break
+            end
+
+            local ab = abilities[index]
+            local cfg = configs and configs[index] or nil
+            if not ab then
                 continue
             end
 
-            local tPos, allow = nil, true
+            local ready = isReadyNow(tower, hash, index)
+            if not ready then
+                continue
+            end
 
-            if tType == "Jet Trooper" then
-                allow = (idx == 2)
+            local targetPos = nil
+            local targetHash = nil
+            local allowUse = true
 
-            elseif tType == "Toxicnator" then
-                tPos = getStrongEnemy(pos, range, noAir)
-                allow = tPos ~= nil
-
-            else
-                local cr = range
-                local abCfg = (cfgs and cfgs[idx]) or (ab and ab.Config)
-                if abCfg and abCfg.HasRevealEffect then
-                    if revealFired or not stealthExists then
-                        continue
-                    end
-                    local radius = abCfg.UseTowerRangeForRadius and range or (abCfg.EffectRadius or range)
-                    if not hasStealthInRange(pos, radius) then
-                        continue
-                    end
-                    revealFired = true
-                    enqueue(hash, idx, nil, nil)
-                    break
-                end
-
-                local isDirect = SETTINGS.Directional[tType]
-                local needPos = isDirect == true
-                if ab and (ab.IsManualAimAtGround or ab.IsManualAimAtPath) then
-                    needPos = true
-                end
-
-                if needPos then
-                    if ab and ab.ManualAimInfiniteRange then
-                        tPos = getRelicTgt()
-                    else
-                        tPos = getFarEnemy(pos, (ab and ab.ManualAimCustomRange) or cr, noAir)
-                    end
-                    allow = tPos ~= nil
-                elseif not isDirect then
-                    local rsq = cr * cr
-                    local has = false
-                    local px, pz = pos.X, pos.Z
-                    for i = 0, ESSize - 1 do
-                        local base = i * ES_STRIDE
-                        if noAir and buffer.readu8(ES_buf, base + 20) == 1 then
-                            continue
-                        end
-                        local dx = buffer.readf32(ES_buf, base) - px
-                        local dz = buffer.readf32(ES_buf, base + 4) - pz
-                        if dx * dx + dz * dz <= rsq then
-                            has = true
-                            break
-                        end
-                    end
-                    allow = has
+            if tower.Type == "Jet Trooper" then
+                if index ~= 2 then
+                    allowUse = false
                 end
             end
 
-            if allow then
-                if tPos then
-                    enqueue(hash, idx, tPos, nil)
+            if tower.Type == "Ghost" then
+                if p2 > 2 then
+                    allowUse = false
                 else
-                    useAbilityNow(hash, idx)
+                    targetPos = getFarthestEnemyNoRange({ excludeAir = false })
+                end
+            elseif tower.Type == "Toxicnator" then
+                targetPos = tacticalTarget(pos, range, {
+                    mode = "maxhp",
+                    excludeAir = false
+                })
+                allowUse = targetPos ~= nil
+            elseif tower.Type == "Flame Trooper" then
+                targetPos = getEnhancedTarget(pos, 9.5, tower.Type, ab, cfg)
+                allowUse = targetPos ~= nil
+            elseif tower.Type == "Ice Breaker" then
+                local customRange = index == 2 and 8 or range
+                targetPos = getEnhancedTarget(pos, customRange, tower.Type, ab, cfg)
+                allowUse = targetPos ~= nil
+            elseif tower.Type == "Slammer" then
+                targetPos = getEnhancedTarget(pos, range, tower.Type, ab, cfg)
+                allowUse = targetPos ~= nil
+            elseif tower.Type == "John" then
+                local customRange = p1 >= 5 and range or 4.5
+                targetPos = getEnhancedTarget(pos, customRange, tower.Type, ab, cfg)
+                allowUse = targetPos ~= nil
+            elseif tower.Type == "Mobster" or tower.Type == "Golden Mobster" then
+                if p2 >= 3 and p2 <= 5 then
+                    if mobsterLastUsedTime[hash] and now - mobsterLastUsedTime[hash] < mobsterDelay then
+                        allowUse = false
+                    else
+                        targetPos = getMobsterTarget(tower, hash, 2)
+                        allowUse = targetPos ~= nil
+                    end
+                elseif p1 >= 4 and p1 <= 5 then
+                    targetPos = getMobsterTarget(tower, hash, 1)
+                    allowUse = targetPos ~= nil
+                else
+                    allowUse = false
+                end
+            elseif tower.Type == "Commander" then
+                local directionalInfo = directionalTowerTypes[tower.Type]
+                if type(directionalInfo) == "table" and directionalInfo.onlyAbilityIndex ~= index then
+                    allowUse = false
+                else
+                    targetPos = getCommanderTarget()
+                    allowUse = targetPos ~= nil
+                end
+            else
+                local directional = directionalTowerTypes[tower.Type]
+                local sendWithPos = (type(directional) == "table" and directional.onlyAbilityIndex == index) or directional == true
+
+                if requiresManualAiming(ab, cfg) then
+                    sendWithPos = true
+                end
+
+                if sendWithPos and allowUse then
+                    targetPos = getEnhancedTarget(pos, range, tower.Type, ab, cfg)
+                    if not targetPos then
+                        allowUse = false
+                    end
+                elseif not sendWithPos and not directional and allowUse then
+                    local hasEnemies = getFarthestEnemyInRangeByPath(pos, range, {
+                        excludeAir = skipAirTowers[tower.Type] or false
+                    })
+                    if not hasEnemies then
+                        allowUse = false
+                    end
+                end
+            end
+
+            if tower.Type == "Medic" then
+                local _, medicP2 = getUpgradeLevels(tower)
+                if medicP2 >= 4 then
+                    local target = getBestMedicTarget(tower, ownedTowers)
+                    if target then
+                        targetHash = target
+                    else
+                        allowUse = false
+                    end
+                else
+                    allowUse = false
+                end
+            end
+
+            if allowUse then
+                if globalEnv and globalEnv.TDX_Config and globalEnv.TDX_Config.UseThreadedRemotes == false then
+                    safeInvokeAbility(hash, index, targetPos, targetHash)
+                else
+                    safeThreadInvoke(hash, index, targetPos, targetHash)
+                end
+                skillsThisFrame = skillsThisFrame + 1
+
+                if tower.Type == "Mobster" or tower.Type == "Golden Mobster" then
+                    if p2 >= 3 and p2 <= 5 then
+                        mobsterLastUsedTime[hash] = now
+                    end
                 end
             end
         end
     end
-end))
+end)
 
 task.spawn(function()
-    setTI(2)
-
-    pcall(function()
-        local lp = Players.LocalPlayer
-        local loadout = lp:GetAttribute("Loadout") or {}
-        if typeof(loadout) == "string" then
-            for name in loadout:gmatch("[^,]+") do
-                LoadoutTypes[name:match("^%s*(.-)%s*$")] = true
-            end
-        elseif typeof(loadout) == "table" then
-            for _, name in _ipairs(loadout) do
-                LoadoutTypes[name] = true
-            end
-        end
-    end)
+    setThreadIdentity(2)
 
     repeat
         task.wait(0.1)
     until EnemyClass.GetEnemies() and TowerClass.GetTowers()
 
+    populate()
     hookTC()
     hookEC()
     hookAHC()
-    populate()
 
-    ActEnemies = snapEnemies()
     Initialized = true
 
     local progressEvent = dtc and dtc.CustomEvent and dtc.CustomEvent.new()
@@ -1516,7 +958,8 @@ task.spawn(function()
     end)
 
     while true do
-        task.wait(CONFIG.CacheInterval)
+        task.wait(0.05)
+
         for k, e in _pairs(FEnemies) do
             if not e.IsAlive then
                 onERemove(k)
@@ -1531,37 +974,5 @@ task.spawn(function()
                 end
             end
         end
-
-        ActEnemies = snapEnemies()
-    end
-end)
-
-task.spawn(function()
-    setTI(2)
-    while true do
-        if SQ_sz > 0 then
-            local h = SQ_hd
-            local ok, serverCooldown = UseAbilReq:InvokeServer(SQ_h[h], SQ_i[h], SQ_p[h], SQ_th[h])
-            local ab = SQ_ab[h]
-            SQ_h[h] = nil
-            SQ_i[h] = nil
-            SQ_p[h] = nil
-            SQ_th[h] = nil
-            SQ_ab[h] = nil
-            SQ_hd = h % Q_CAP + 1
-            SQ_sz = SQ_sz - 1
-            if ab then
-                if ok and serverCooldown then
-                    pcall(function()
-                        ab.CooldownRemaining = serverCooldown
-                    end)
-                elseif not ok then
-                    pcall(function()
-                        ab.CooldownRemaining = 0
-                    end)
-                end
-            end
-        end
-        task.wait(0.03)
     end
 end)
