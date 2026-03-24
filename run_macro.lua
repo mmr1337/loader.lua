@@ -694,8 +694,45 @@ local function MovePlayerTo(posStr)
     end
     conn:Disconnect()
 
-    hrp.CFrame = CFrame.new(endPos) * rotOnly
+    local finalCF = CFrame.new(endPos) * rotOnly
+    hrp.CFrame = finalCF
     humanoid.WalkSpeed = savedSpeed
+
+    -- Huỷ lock cũ nếu có
+    if globalEnv._playerLockConn then
+        pcall(function() globalEnv._playerLockConn:Disconnect() end)
+        globalEnv._playerLockConn = nil
+    end
+    if globalEnv._playerRespawnConn then
+        pcall(function() globalEnv._playerRespawnConn:Disconnect() end)
+        globalEnv._playerRespawnConn = nil
+    end
+
+    local function startLock(char)
+        local lockHRP = char:WaitForChild("HumanoidRootPart", 5)
+        if not lockHRP then return end
+        local lockConn
+        lockConn = RunService.RenderStepped:Connect(function()
+            if not lockHRP or not lockHRP.Parent then
+                lockConn:Disconnect()
+                return
+            end
+            lockHRP.CFrame = finalCF
+        end)
+        if globalEnv._playerLockConn then
+            pcall(function() globalEnv._playerLockConn:Disconnect() end)
+        end
+        globalEnv._playerLockConn = lockConn
+    end
+
+    -- Lock character hiện tại
+    startLock(character)
+
+    -- Reconnect sau mỗi lần respawn
+    globalEnv._playerRespawnConn = player.CharacterAdded:Connect(function(newChar)
+        task.spawn(startLock, newChar)
+    end)
+
     return true
 end
 
@@ -1295,6 +1332,9 @@ local function RunMacroRunner()
 
         elseif entry.PlayerPosition then
             if globalEnv.TDX_Config.MovePlayer then
+                if entry.Wave or entry.Time then
+                    WaitForTiming(entry, gameUI)
+                end
                 MovePlayerTo(entry.PlayerPosition)
             end
 
