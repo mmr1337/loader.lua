@@ -378,6 +378,14 @@ local function hookAHC()
       orig(ab, ...)
       AUCacheGen[ab]=AUGen; AUCacheVal[ab]=false
     end)
+    hookFn(ac, "GetTowerRebuilding", function(orig, ab, ...)
+      if not ab.Tower then return true end
+      return orig(ab, ...)
+    end)
+    hookFn(ac, "CanUse", function(orig, ab, ...)
+      if not ab.Tower then return false end
+      return orig(ab, ...)
+    end)
   end
   return true
 end
