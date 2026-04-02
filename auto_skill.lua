@@ -378,14 +378,7 @@ local function hookAHC()
       orig(ab, ...)
       AUCacheGen[ab]=AUGen; AUCacheVal[ab]=false
     end)
-    hookFn(ac, "GetTowerRebuilding", function(orig, ab, ...)
-      if not ab.Tower then return true end
-      return orig(ab, ...)
-    end)
-    hookFn(ac, "CanUse", function(orig, ab, ...)
-      if not ab.Tower then return false end
-      return orig(ab, ...)
-    end)
+
   end
   return true
 end
@@ -406,6 +399,15 @@ local function hookTC()
   end)
   hookFn(TowerClass, "Destroy", function(orig, tower, ...)
     local hash = tower and tower.Hash
+    if hash then
+      local al = ALCache[hash]
+      if al then
+        for i = 1, 3 do
+          local ab = al[i]
+          if ab then ab.Tower = nil end
+        end
+      end
+    end
     orig(tower, ...); if hash then onTRemove(hash) end
   end)
   hookFn(TowerClass, "ApplyBuffData",  function(orig, tower, ...) orig(tower, ...); updateBuffCache(tower) end)
