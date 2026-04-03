@@ -106,16 +106,24 @@ local NetEvents = {}
 local RequiredEvents = { "NewCoinDropEvent", "ClientsideCoinCollectedStartedEvent", "ClientsideCoinCollectedEvent" }
 for _, name in ipairs(RequiredEvents) do NetEvents[name] = GameModules.Networking.GetEvent(name) end
 
+local collectedCoins = {}
 NetEvents.NewCoinDropEvent:AttachCallback(function(args)
     local serverHash = args[1]
     local walkNear = args[10]
-    if serverHash then
-        task.spawn(function()
-            task.wait(0.5)
+    if not serverHash or collectedCoins[serverHash] then return end
+    task.spawn(function()
+        local deadline = tick() + 10
+        local interval = 0.3
+        while tick() < deadline and not collectedCoins[serverHash] do
             if walkNear then NetEvents.ClientsideCoinCollectedStartedEvent:FireServer(serverHash) end
             NetEvents.ClientsideCoinCollectedEvent:FireServer(serverHash)
-        end)
-    end
+            task.wait(interval)
+            interval = math.min(interval * 1.5, 2)
+        end
+    end)
+end)
+GameModules.Networking.GetEvent("ClientsideCoinUpdate"):AttachCallback(function(_, serverHash)
+    if serverHash then collectedCoins[serverHash] = true end
 end)
 
 local pendingQueue = {}
@@ -868,11 +876,13 @@ RunService.RenderStepped:Connect(function(dt)
                         posTrack.idleTime = posTrack.idleTime + dt
                         if posTrack.idleTime >= CurrentConfig.PlayerIdleThreshold then
                             local w, t = getCurrentWaveAndTime()
-                            appendToJsonFile({
-                                PlayerPosition = string.format("%s, %s, %s",
-                                    tostring(curPos.X), tostring(curPos.Y), tostring(curPos.Z)),
-                                Wave = w, Time = convertTimeToNumber(t),
-                            })
+                            if w ~= "-" then
+                                appendToJsonFile({
+                                    PlayerPosition = string.format("%s, %s, %s",
+                                        tostring(curPos.X), tostring(curPos.Y), tostring(curPos.Z)),
+                                    Wave = w, Time = convertTimeToNumber(t),
+                                })
+                            end
                             posTrack.recorded = true
                         end
                     end
