@@ -63,7 +63,7 @@ end
 
 local function safeReadFile(path) return (isfile and readfile and pcall(readfile, path)) and readfile(path) or nil end
 local function safeIsFile(path) return (isfile and pcall(isfile, path)) and isfile(path) or false end
-local GameModules = { Networking = nil, LevelUtils = nil, TowerClass = nil, ShopUtils = nil, PowerUpsConfig = nil }
+local GameModules = { Networking = nil, LevelUtils = nil, TowerClass = nil, ShopUtils = nil, PowerUpsConfig = nil, GameClass = nil }
 
 local function InitializeModules()
     local Common = ReplicatedStorage:WaitForChild("TDX_Shared"):WaitForChild("Common")
@@ -85,9 +85,10 @@ local function InitializeModules()
     end)
 
     local Client = PlayerScripts:WaitForChild("Client")
-    local GameClass = Client:FindFirstChild("GameClass")
-    if GameClass then
-        local TowerMod = GameClass:FindFirstChild("TowerClass")
+    local GameClassMod = Client:FindFirstChild("GameClass")
+    if GameClassMod then
+        GameModules.GameClass = RequireSafe(GameClassMod)
+        local TowerMod = GameClassMod:FindFirstChild("TowerClass")
         if TowerMod then GameModules.TowerClass = RequireSafe(TowerMod) end
     end
     if not GameModules.TowerClass then error("Failed to load TowerClass") end
@@ -216,19 +217,24 @@ local NetEvents = {}
 local RequiredEvents = {"NewCoinDropEvent", "ClientsideCoinCollectedStartedEvent", "ClientsideCoinCollectedEvent"}
 for _, name in ipairs(RequiredEvents) do NetEvents[name] = GameModules.Networking.GetEvent(name) end
 
+local collectedCoins = {}  -- serverHash đã confirmed bởi server
 NetEvents.NewCoinDropEvent:AttachCallback(function(args)
     local serverHash = args[1]
     local walkNear = args[10]
-    if serverHash then
-        task.spawn(function()
-            task.wait(0.2)
-
-            if walkNear then 
-                NetEvents.ClientsideCoinCollectedStartedEvent:FireServer(serverHash) 
-            end
+    if not serverHash or collectedCoins[serverHash] then return end
+    task.spawn(function()
+        local deadline = tick() + 10  -- timeout 10s
+        local interval = 0.3
+        while tick() < deadline and not collectedCoins[serverHash] do
+            if walkNear then NetEvents.ClientsideCoinCollectedStartedEvent:FireServer(serverHash) end
             NetEvents.ClientsideCoinCollectedEvent:FireServer(serverHash)
-        end)
-    end
+            task.wait(interval)
+            interval = math.min(interval * 1.5, 2)  -- backoff: 0.3 → 0.45 → ... → 2s max
+        end
+    end)
+end)
+GameModules.Networking.GetEvent("ClientsideCoinUpdate"):AttachCallback(function(_, serverHash)
+    if serverHash then collectedCoins[serverHash] = true end
 end)
 local function FindTower(mode, value)
     if mode == "Axis" then
@@ -290,22 +296,28 @@ end
 local function convertToTimeFormat(num) return string.format("%02d:%02d", math.floor(num / 100), num % 100) end
 local function parseTimeToNumber(s) local m,sec = s:match("(%d+):(%d+)"); return m and (tonumber(m)*100 + tonumber(sec)) or nil end
 
--- Wait until recorded Wave/Time is reached. gameUI must be passed.
--- Wave is matched exactly; Time waits until game time <= recorded time (countdown timer).
-local function WaitForTiming(entry, gameUI)
+-- waveIndex: waveStr → thứ tự, dùng để detect wave đã qua thay vì string match
+local function WaitForTiming(entry, gameUI, waveIndex)
     if not entry.Wave and not entry.Time then return end
+    local targetWave = entry.Wave and tostring(entry.Wave) or nil
+    local targetWaveIdx = targetWave and waveIndex[targetWave] or nil
     while true do
         local ok, waveText, timeText = pcall(function()
             return gameUI.waveText.Text, gameUI.timeText.Text
         end)
         if ok then
-            local waveMatch = (not entry.Wave) or (waveText == tostring(entry.Wave))
-            local timeMatch = true
-            if entry.Time then
-                local current = parseTimeToNumber(timeText)
-                timeMatch = current and (current <= entry.Time)
+            local currentIdx = waveIndex[waveText] or 0
+            -- wave đã qua (idx lớn hơn) hoặc không có ràng buộc wave → bỏ qua check wave
+            local waveMatch = (not targetWaveIdx) or (currentIdx >= targetWaveIdx)
+            if waveMatch then
+                if entry.Time then
+                    local current = parseTimeToNumber(timeText)
+                    -- nếu đúng wave thì chờ time; nếu wave đã qua thì trigger ngay
+                    if (not targetWaveIdx or currentIdx > targetWaveIdx) or (current and current <= entry.Time) then return end
+                else
+                    return
+                end
             end
-            if waveMatch and timeMatch then return end
         end
         RunService.RenderStepped:Wait()
     end
@@ -316,7 +328,12 @@ local function CalculateUpgradeCost(tower, path, count)
     local lh = tower.LevelHandler
     local discount = 0; if tower.BuffHandler then pcall(function() discount = tower.BuffHandler:GetDiscount() or 0 end) end
     local dynamic = {}; if lh.HasDynamicPriceScaling then dynamic = GameModules.TowerClass.GetDynamicPriceScalingData(tower) or {} end
-    local s, r = pcall(function() return GameModules.LevelUtils.GetLevelUpgradeCost(lh, tower.Type, path, count, discount, 1, dynamic) end)
+    local multiplier = 1
+    if GameModules.GameClass then
+        local game = GameModules.GameClass.GetCurrentGame()
+        if game then pcall(function() multiplier = game:GetTowerCostMultiplier(tower.Type) or 1 end) end
+    end
+    local s, r = pcall(function() return lh:GetLevelUpgradeCost(path, count, discount, multiplier, dynamic) end)
     return s and r or nil
 end
 
@@ -453,7 +470,7 @@ local function MovePlayerTo(posStr)
 
     local walkSpeed = humanoid.WalkSpeed > 0 and humanoid.WalkSpeed or 16
     local startPos = hrp.Position
-    local endPos   = Vector3.new(target.X, hrp.Position.Y, target.Z)
+    local endPos = target
     local distance = (endPos - startPos).Magnitude
     local duration = distance / walkSpeed
 
@@ -464,12 +481,25 @@ local function MovePlayerTo(posStr)
     humanoid.WalkSpeed = 0
 
     local elapsed = 0
+    local stuck = false
+    local lastCheckPos = startPos
+    local lastCheckTime = tick()
+
     local conn = RunService.RenderStepped:Connect(function(dt)
         elapsed = elapsed + dt
         local alpha = math.min(elapsed / math.max(duration, 0.001), 1)
         hrp.CFrame = CFrame.new(startPos:Lerp(endPos, alpha)) * rotOnly
+
+        local now = tick()
+        if now - lastCheckTime >= 0.5 then
+            local moved = (hrp.Position - lastCheckPos).Magnitude
+            if moved < 0.5 and alpha < 1 then stuck = true end
+            lastCheckPos = hrp.Position
+            lastCheckTime = now
+        end
     end)
-    while elapsed < duration do RunService.RenderStepped:Wait() end
+
+    while elapsed < duration and not stuck do RunService.RenderStepped:Wait() end
     conn:Disconnect()
 
     hrp.CFrame = CFrame.new(endPos) * rotOnly
@@ -761,14 +791,25 @@ local function StartShopRunner(gameUI)
         end
     end)
 end
-local function StartUnifiedMonitor(monitorEntries, gameUI)
+local function StartUnifiedMonitor(monitorEntries, gameUI, waveIndex)
     local processed, attemptedSkips = {}, {}
-    local function shouldRun(entry, wave, time)
+    local cachedWaveStr = ""
+    local cachedWaveIdx = 0
+    local cachedTimeNum = nil
+
+    local function shouldRun(entry, waveStr, waveIdx, timeNum)
         if entry.SkipWave then
-            return not attemptedSkips[entry.SkipWave] and entry.SkipWave == wave and (not entry.SkipWhen or (parseTimeToNumber(time) or 9999) <= entry.SkipWhen)
+            return not attemptedSkips[entry.SkipWave] and tostring(entry.SkipWave) == waveStr
+                   and (not entry.SkipWhen or (timeNum or 9999) <= entry.SkipWhen)
         elseif entry.TowerTargetChange or entry.towermoving then
-            return (not entry.Wave or entry.Wave == wave) and (not entry.Time or time == convertToTimeFormat(entry.Time))
-                   and (not entry.wave or entry.wave == wave) and (not entry.time or time == convertToTimeFormat(entry.time))
+            local targetWave = tostring(entry.Wave or entry.wave or "")
+            local targetTime = entry.Time or entry.time
+            local targetIdx = waveIndex[targetWave]
+            if targetIdx and waveIdx < targetIdx then return false end  -- chưa tới wave
+            if targetTime and targetIdx and waveIdx == targetIdx then
+                return timeNum and (timeNum <= targetTime)
+            end
+            return true  -- wave đã qua hoặc không ràng buộc
         end
         return false
     end
@@ -778,21 +819,26 @@ local function StartUnifiedMonitor(monitorEntries, gameUI)
         while true do
             local s, wave, time = pcall(function() return gameUI.waveText.Text, gameUI.timeText.Text end)
             if s then
+                local idx = waveIndex[wave] or cachedWaveIdx
+                if wave ~= cachedWaveStr then cachedTimeNum = nil end  -- sang wave mới, reset time
+                cachedWaveStr = wave
+                cachedWaveIdx = idx
+                cachedTimeNum = parseTimeToNumber(time) or cachedTimeNum
                 for i, entry in ipairs(monitorEntries) do
-                    if not processed[i] and shouldRun(entry, wave, time) then
+                    if not processed[i] and shouldRun(entry, cachedWaveStr, cachedWaveIdx, cachedTimeNum) then
                         local done = false
                         if entry.SkipWave then
                             attemptedSkips[entry.SkipWave] = true
-                            if globalEnv.TDX_Config.AllowParallelSkips then task.spawn(function() 
+                            if globalEnv.TDX_Config.AllowParallelSkips then task.spawn(function()
                                 if globalEnv.TDX_Config.UseThreadedRemotes then SafeRemoteCall("FireServer", Remotes.SkipWaveVoteCast, true) else Remotes.SkipWaveVoteCast:FireServer(true) end
-                            end) else 
+                            end) else
                                 if globalEnv.TDX_Config.UseThreadedRemotes then SafeRemoteCall("FireServer", Remotes.SkipWaveVoteCast, true) else Remotes.SkipWaveVoteCast:FireServer(true) end
                             end
                             done = true
                         elseif entry.towermoving then
                             done = UseMovingSkillRetry(entry.towermoving, entry.skillindex, entry.location)
                         elseif entry.TowerTargetChange then
-                            if globalEnv.TDX_Config.AllowParallelTargets then task.spawn(function() ChangeTargetRetry(entry.TowerTargetChange, entry.TargetWanted) end) 
+                            if globalEnv.TDX_Config.AllowParallelTargets then task.spawn(function() ChangeTargetRetry(entry.TowerTargetChange, entry.TargetWanted) end)
                             else done = ChangeTargetRetry(entry.TowerTargetChange, entry.TargetWanted) end
                             done = true
                         end
@@ -860,6 +906,23 @@ local function RunMacroRunner()
     end)  
 
     local mainMacro = {}
+
+    -- Build waveIndex từ toàn bộ macro (dùng chung cho WaitForTiming và monitor)
+    local waveIndex = {}
+    do
+        local seen, order = {}, {}
+        local sorted = {table.unpack(macro)}
+        table.sort(sorted, function(a, b)
+            local wa = tonumber(tostring(a.Wave or a.wave or a.SkipWave or ""):match("(%d+)")) or math.huge
+            local wb = tonumber(tostring(b.Wave or b.wave or b.SkipWave or ""):match("(%d+)")) or math.huge
+            return wa < wb
+        end)
+        for _, e in ipairs(sorted) do
+            local w = tostring(e.Wave or e.wave or e.SkipWave or "")
+            if w ~= "" and not seen[w] then seen[w] = true; table.insert(order, w) end
+        end
+        for i, w in ipairs(order) do waveIndex[w] = i end
+    end
     for i, entry in ipairs(macro) do
         if entry.ShopUpgrade or entry.ShopRefund then
             table.insert(ShopSystem.Queue, entry)
@@ -872,7 +935,14 @@ local function RunMacroRunner()
     end
 
     if #ShopSystem.Queue > 0 then StartShopRunner(gameUI) end
-    if #monitorEntries > 0 then StartUnifiedMonitor(monitorEntries, gameUI) end  
+    if #monitorEntries > 0 then
+        table.sort(monitorEntries, function(a, b)
+            local wa = waveIndex[tostring(a.Wave or a.wave or a.SkipWave or "")] or math.huge
+            local wb = waveIndex[tostring(b.Wave or b.wave or b.SkipWave or "")] or math.huge
+            return wa < wb
+        end)
+        StartUnifiedMonitor(monitorEntries, gameUI, waveIndex)
+    end
 
     local i = 1
     while i <= #mainMacro do
@@ -889,7 +959,7 @@ local function RunMacroRunner()
         elseif entry.SuperFunction == "reshield" then activeReshieldConfig = entry
 
         elseif entry.TowerPlaced and entry.TowerVector then
-             if globalEnv.TDX_Config.PlaceByTiming then WaitForTiming(entry, gameUI) end
+             if globalEnv.TDX_Config.PlaceByTiming then WaitForTiming(entry, gameUI, waveIndex) end
              local v = {}; for c in entry.TowerVector:gmatch("[^,%s]+") do table.insert(v, tonumber(c)) end
              local pos = Vector3.new(v[1], v[2], v[3])
              local args = {tonumber(entry.TowerA1), entry.TowerPlaced, pos, tonumber(entry.Rotation or 0)}
@@ -897,7 +967,7 @@ local function RunMacroRunner()
              PlaceTowerRetry(args, pos.X)
              towerRecords[pos.X] = towerRecords[pos.X] or {}; table.insert(towerRecords[pos.X], { line = i, entry = entry })
         elseif entry.TowerUpgraded then
-             if globalEnv.TDX_Config.UpgradeByTiming then WaitForTiming(entry, gameUI) end
+             if globalEnv.TDX_Config.UpgradeByTiming then WaitForTiming(entry, gameUI, waveIndex) end
              local axis, path = tonumber(entry.TowerUpgraded), entry.UpgradePath
              local batchCount, j = 1, i + 1
              while j <= #mainMacro do
@@ -918,7 +988,7 @@ local function RunMacroRunner()
         elseif entry.PlayerPosition then
              if globalEnv.TDX_Config.MovePlayer then MovePlayerTo(entry.PlayerPosition) end
         elseif entry.SellTower then
-             if globalEnv.TDX_Config.SellByTiming then WaitForTiming(entry, gameUI) end
+             if globalEnv.TDX_Config.SellByTiming then WaitForTiming(entry, gameUI, waveIndex) end
              SellTowerRetry(tonumber(entry.SellTower))
              towerRecords[tonumber(entry.SellTower)] = nil
         elseif entry.PowerUp then
