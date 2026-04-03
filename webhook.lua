@@ -6,6 +6,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 
 local LOBBY_PLACE_ID = 9503261072
+local MATCH_START_TIME = os.clock()
 
 local DataService = require(
     ReplicatedStorage
@@ -24,7 +25,30 @@ end
 local function formatTime(seconds)
     seconds = tonumber(seconds)
     if not seconds then return "N/A" end
-    return string.format("%dm %ds", math.floor(seconds / 60), math.floor(seconds % 60))
+
+    local h = math.floor(seconds / 3600)
+    local m = math.floor((seconds % 3600) / 60)
+    local s = math.floor(seconds % 60)
+
+    if h > 0 then
+        return string.format("%dh %dm %ds", h, m, s)
+    else
+        return string.format("%dm %ds", m, s)
+    end
+end
+
+local function formatRuntime()
+    local elapsed = os.clock() - MATCH_START_TIME
+
+    local h = math.floor(elapsed / 3600)
+    local m = math.floor((elapsed % 3600) / 60)
+    local s = math.floor(elapsed % 60)
+
+    if h > 0 then
+        return string.format("%dh %dm %ds", h, m, s)
+    else
+        return string.format("%dm %ds", m, s)
+    end
 end
 
 local function safeGetData(key)
@@ -54,7 +78,6 @@ local function sendToWebhook(data)
         })
     end
 
-    -- Player lên đầu, dùng spoiler để che
     table.insert(embedFields, {
         name   = "Player",
         value  = "||" .. LocalPlayer.Name .. "||",
@@ -62,7 +85,7 @@ local function sendToWebhook(data)
     })
 
     local priorityKeys = {
-        "Map", "Mode", "Result", "Wave", "Time",
+        "Map", "Mode", "Result", "Wave", "Time", "RealTime",
         "Level", "Wins",
         "Gold", "Crystals", "Cookies", "Envelopes", "Tokens", "XP"
     }
@@ -106,104 +129,6 @@ local function sendToWebhook(data)
     end)
 end
 
-local function sendLobbyInfo()
-    task.spawn(function()
-        local attempts = 0
-        repeat
-            task.wait(1)
-            attempts = attempts + 1
-        until safeGetData("Gold") ~= nil or attempts > 30
-
-        local dWins      = safeGetData("Wins")      or 0
-        local dGold      = safeGetData("Gold")      or 0
-        local dCrystals  = safeGetData("Crystals")  or 0
-        local dCookies   = safeGetData("Cookies")   or 0
-        local dEnvelopes = safeGetData("Envelopes") or 0
-
-        local guiLevel = "N/A"
-        local ls = LocalPlayer:FindFirstChild("leaderstats")
-        if ls and ls:FindFirstChild("Level") then
-            guiLevel = ls.Level.Value
-        end
-
-        local inventory    = safeGetData("Inventory") or {}
-        local powerUpsData = inventory.PowerUps or {}
-
-        local powerupList = {}
-        for name, amount in pairs(powerUpsData) do
-            if type(amount) == "number" and amount > 0 then
-                table.insert(powerupList, name .. " x" .. amount)
-            end
-        end
-        table.sort(powerupList)
-
-        local towerList = {}
-        local config = getgenv().webhookConfig or {}
-        if config.logInventory then
-            local ownedTowers = inventory.Towers or {}
-            for towerName, isOwned in pairs(ownedTowers) do
-                if isOwned then
-                    table.insert(towerList, tostring(towerName))
-                end
-            end
-            table.sort(towerList)
-        end
-
-        local stats = {
-            Level     = tostring(guiLevel),
-            Wins      = tostring(dWins),
-            Gold      = tostring(math.floor(dGold)),
-            Crystals  = tostring(math.floor(dCrystals)),
-            Cookies   = tostring(math.floor(dCookies)),
-            Envelopes = tostring(math.floor(dEnvelopes)),
-            PowerUps  = #powerupList > 0 and table.concat(powerupList, ", ") or "None",
-        }
-
-        if #towerList > 0 then
-            stats.Towers = table.concat(towerList, ", ")
-        end
-
-        sendToWebhook({ type = "lobby", stats = stats })
-    end)
-end
-
-local function loopCheckLobbyCurrency()
-    local config         = getgenv().webhookConfig or {}
-    local TARGET_GOLD    = config.targetGold
-    local TARGET_CRYSTAL = config.targetCrystal
-
-    if not TARGET_GOLD and not TARGET_CRYSTAL then return end
-
-    task.spawn(function()
-        while true do
-            task.wait(5)
-
-            local currentGold     = safeGetData("Gold")     or 0
-            local currentCrystals = safeGetData("Crystals") or 0
-
-            if TARGET_GOLD and currentGold >= TARGET_GOLD then
-                sendToWebhook({
-                    type  = "lobby",
-                    stats = { message = "Target Gold Reached", Gold = tostring(currentGold) }
-                })
-                task.wait(2)
-                LocalPlayer:Kick("Reached Gold Target: " .. currentGold)
-                break
-            end
-
-            if TARGET_CRYSTAL and currentCrystals >= TARGET_CRYSTAL then
-                sendToWebhook({
-                    type  = "lobby",
-                    stats = { message = "Target Crystal Reached", Crystals = tostring(currentCrystals) }
-                })
-                task.wait(2)
-                LocalPlayer:Kick("Reached Crystal Target: " .. currentCrystals)
-                break
-            end
-        end
-    end)
-end
-
 local function hookGameReward()
     task.spawn(function()
         local handler
@@ -236,6 +161,7 @@ local function hookGameReward()
                     Result    = p_u_115.Victory and "Victory" or "Defeat",
                     Wave      = p_u_115.LastPassedWave and tostring(p_u_115.LastPassedWave) or "N/A",
                     Time      = formatTime(p_u_115.TimeElapsed),
+                    RealTime  = formatRuntime(),
                     Gold      = getVal(p_u_115.PlayerNameToGoldMap),
                     Crystals  = getVal(p_u_115.PlayerNameToCrystalsMap),
                     Cookies   = getVal(p_u_115.PlayerNameToCookiesMap),
@@ -268,9 +194,6 @@ local function hookGameReward()
     end)
 end
 
-if game.PlaceId == LOBBY_PLACE_ID then
-    sendLobbyInfo()
-    loopCheckLobbyCurrency()
-else
+if game.PlaceId ~= LOBBY_PLACE_ID then
     hookGameReward()
 end
