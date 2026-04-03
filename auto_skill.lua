@@ -379,6 +379,14 @@ local function hookAHC()
       AUCacheGen[ab]=AUGen; AUCacheVal[ab]=false
     end)
 
+    -- Guard GetTowerRebuilding khỏi nil crash khi AbilityHotbarHandler refresh
+    -- trước khi SetTower hoàn tất (race condition khi chạy 3 script cùng lúc).
+    -- Phải trả TRUE khi Tower = nil để CanUse() → false → game không gọi Tower:GetPosition()
+    hookFn(ac, "GetTowerRebuilding", function(orig, ab, ...)
+      if not ab.Tower then return true end
+      return orig(ab, ...)
+    end)
+
   end
   return true
 end
@@ -399,15 +407,10 @@ local function hookTC()
   end)
   hookFn(TowerClass, "Destroy", function(orig, tower, ...)
     local hash = tower and tower.Hash
-    if hash then
-      local al = ALCache[hash]
-      if al then
-        for i = 1, 3 do
-          local ab = al[i]
-          if ab then ab.Tower = nil end
-        end
-      end
-    end
+    -- NOTE: Không set ab.Tower = nil ở đây vì AbilityHotbarHandler của game
+    -- vẫn còn giữ reference đến ability object và có thể gọi CanUse() →
+    -- GetTowerRebuilding() → Tower:Alive() trong cùng frame → crash nil.
+    -- Game tự cleanup Tower reference sau khi orig() hoàn tất.
     orig(tower, ...); if hash then onTRemove(hash) end
   end)
   hookFn(TowerClass, "ApplyBuffData",  function(orig, tower, ...) orig(tower, ...); updateBuffCache(tower) end)
