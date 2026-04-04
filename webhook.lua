@@ -6,7 +6,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 
 local LOBBY_PLACE_ID = 9503261072
-local MATCH_START_TIME = os.clock()
 
 local DataService = require(
     ReplicatedStorage
@@ -17,11 +16,13 @@ local DataService = require(
 )
 
 local MAX_RETRY = 3
+local realStartTime = time()
 
 local function getWebhookURL()
     return getgenv().webhookConfig and getgenv().webhookConfig.webhookUrl or ""
 end
 
+-- FORMAT TIME (h m s)
 local function formatTime(seconds)
     seconds = tonumber(seconds)
     if not seconds then return "N/A" end
@@ -29,20 +30,6 @@ local function formatTime(seconds)
     local h = math.floor(seconds / 3600)
     local m = math.floor((seconds % 3600) / 60)
     local s = math.floor(seconds % 60)
-
-    if h > 0 then
-        return string.format("%dh %dm %ds", h, m, s)
-    else
-        return string.format("%dm %ds", m, s)
-    end
-end
-
-local function formatRuntime()
-    local elapsed = os.clock() - MATCH_START_TIME
-
-    local h = math.floor(elapsed / 3600)
-    local m = math.floor((elapsed % 3600) / 60)
-    local s = math.floor(elapsed % 60)
 
     if h > 0 then
         return string.format("%dh %dm %ds", h, m, s)
@@ -129,6 +116,61 @@ local function sendToWebhook(data)
     end)
 end
 
+-- LOBBY INFO
+local function sendLobbyInfo()
+    task.spawn(function()
+        local attempts = 0
+        repeat
+            task.wait(1)
+            attempts += 1
+        until safeGetData("Gold") ~= nil or attempts > 30
+
+        local stats = {
+            Level     = tostring((LocalPlayer:FindFirstChild("leaderstats") and LocalPlayer.leaderstats:FindFirstChild("Level") and LocalPlayer.leaderstats.Level.Value) or "N/A"),
+            Wins      = tostring(safeGetData("Wins") or 0),
+            Gold      = tostring(math.floor(safeGetData("Gold") or 0)),
+            Crystals  = tostring(math.floor(safeGetData("Crystals") or 0)),
+            Cookies   = tostring(math.floor(safeGetData("Cookies") or 0)),
+            Envelopes = tostring(math.floor(safeGetData("Envelopes") or 0)),
+        }
+
+        sendToWebhook({ type = "lobby", stats = stats })
+    end)
+end
+
+-- TARGET CHECK
+local function loopCheckLobbyCurrency()
+    local config = getgenv().webhookConfig or {}
+    local TARGET_GOLD    = config.targetGold
+    local TARGET_CRYSTAL = config.targetCrystal
+
+    if not TARGET_GOLD and not TARGET_CRYSTAL then return end
+
+    task.spawn(function()
+        while true do
+            task.wait(5)
+
+            local g = safeGetData("Gold") or 0
+            local c = safeGetData("Crystals") or 0
+
+            if TARGET_GOLD and g >= TARGET_GOLD then
+                sendToWebhook({ type="lobby", stats={message="Target Gold Reached", Gold=g} })
+                task.wait(2)
+                LocalPlayer:Kick("Reached Gold Target")
+                break
+            end
+
+            if TARGET_CRYSTAL and c >= TARGET_CRYSTAL then
+                sendToWebhook({ type="lobby", stats={message="Target Crystal Reached", Crystals=c} })
+                task.wait(2)
+                LocalPlayer:Kick("Reached Crystal Target")
+                break
+            end
+        end
+    end)
+end
+
+-- GAME HOOK
 local function hookGameReward()
     task.spawn(function()
         local handler
@@ -142,6 +184,7 @@ local function hookGameReward()
         if not success or not handler then return end
 
         local oldDisplay = handler.DisplayScreen
+
         handler.DisplayScreen = function(p_u_115)
             task.spawn(function()
                 local pName = LocalPlayer.Name
@@ -152,8 +195,9 @@ local function hookGameReward()
                     if type(val) == "number" and val > 0 then
                         return tostring(val)
                     end
-                    return nil
                 end
+
+                local realTime = time() - realStartTime
 
                 local rewards = {
                     Map       = p_u_115.MapName or "Unknown",
@@ -161,7 +205,7 @@ local function hookGameReward()
                     Result    = p_u_115.Victory and "Victory" or "Defeat",
                     Wave      = p_u_115.LastPassedWave and tostring(p_u_115.LastPassedWave) or "N/A",
                     Time      = formatTime(p_u_115.TimeElapsed),
-                    RealTime  = formatRuntime(),
+                    RealTime  = formatTime(realTime),
                     Gold      = getVal(p_u_115.PlayerNameToGoldMap),
                     Crystals  = getVal(p_u_115.PlayerNameToCrystalsMap),
                     Cookies   = getVal(p_u_115.PlayerNameToCookiesMap),
@@ -169,22 +213,6 @@ local function hookGameReward()
                     Tokens    = getVal(p_u_115.PlayerNameToTokensMap),
                     XP        = getVal(p_u_115.PlayerNameToXPMap),
                 }
-
-                local puMap  = (p_u_115.PlayerNameToPowerUpsRewardedMapMap or {})[pName] or {}
-                local puList = {}
-                for id, count in pairs(puMap) do
-                    if type(count) == "number" and count > 0 then
-                        table.insert(puList, id .. " x" .. count)
-                    end
-                end
-                if #puList > 0 then
-                    rewards.PowerUps = table.concat(puList, ", ")
-                end
-
-                local towerRewards = (p_u_115.PlayerNameToTowerRewardMap or {})[pName] or {}
-                if #towerRewards > 0 then
-                    rewards.NewTowers = table.concat(towerRewards, ", ")
-                end
 
                 sendToWebhook({ type = "game", rewards = rewards })
             end)
@@ -194,6 +222,11 @@ local function hookGameReward()
     end)
 end
 
-if game.PlaceId ~= LOBBY_PLACE_ID then
+-- MAIN
+if game.PlaceId == LOBBY_PLACE_ID then
+    sendLobbyInfo()
+    loopCheckLobbyCurrency()
+else
+    realStartTime = time()
     hookGameReward()
 end
