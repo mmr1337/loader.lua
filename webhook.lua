@@ -15,6 +15,13 @@ local DataService = require(
         :WaitForChild("Data")
 )
 
+local MapData = require(
+    ReplicatedStorage
+        :WaitForChild("TDX_Shared")
+        :WaitForChild("Common")
+        :WaitForChild("MapData")
+)
+
 local MAX_RETRY = 3
 local realStartTime = time()
 
@@ -22,7 +29,6 @@ local function getWebhookURL()
     return getgenv().webhookConfig and getgenv().webhookConfig.webhookUrl or ""
 end
 
--- FORMAT TIME (h m s)
 local function formatTime(seconds)
     seconds = tonumber(seconds)
     if not seconds then return "N/A" end
@@ -45,7 +51,36 @@ local function safeGetData(key)
     return nil
 end
 
-local function sendToWebhook(data)
+local function normalizeMapName(s)
+    return (s:gsub("%s+", ""):lower())
+end
+
+local function resolveMapImageUrl(rawUrl)
+    if not rawUrl or rawUrl == "" then return nil end
+    local id = rawUrl:match("rbxassetid://(%d+)")
+    if id then
+        return "https://assetdelivery.roblox.com/v1/asset/?id=" .. id
+    end
+    id = rawUrl:match("[?&]id=(%d+)")
+    if id then
+        return "https://assetdelivery.roblox.com/v1/asset/?id=" .. id
+    end
+    return nil
+end
+
+local function getMapImageUrl(mapName)
+    if not mapName then return nil end
+    local normTarget = normalizeMapName(mapName)
+    for mapEnum, mapInfo in pairs(MapData) do
+        local enumStr = tostring(mapEnum):match("%.(%w+)$") or ""
+        if normalizeMapName(enumStr) == normTarget then
+            return resolveMapImageUrl(mapInfo.Image)
+        end
+    end
+    return nil
+end
+
+local function sendToWebhook(data, imageUrl)
     local url = getWebhookURL()
     if url == "" then return end
 
@@ -88,13 +123,17 @@ local function sendToWebhook(data)
         addField(k, v, false)
     end
 
-    local body = HttpService:JSONEncode({
-        embeds = {{
-            title  = data.type == "game" and "Game Result" or "Lobby Info",
-            color  = 0x5B9DFF,
-            fields = embedFields,
-        }}
-    })
+    local embed = {
+        title  = data.type == "game" and "Game Result" or "Lobby Info",
+        color  = 0x5B9DFF,
+        fields = embedFields,
+    }
+
+    if imageUrl then
+        embed.image = { url = imageUrl }
+    end
+
+    local body = HttpService:JSONEncode({ embeds = { embed } })
 
     task.spawn(function()
         for _ = 1, MAX_RETRY do
@@ -134,6 +173,27 @@ local function sendLobbyInfo()
             Envelopes = tostring(math.floor(safeGetData("Envelopes") or 0)),
         }
 
+        -- Power ups: Inventory.PowerUps = { name = count }
+        local inventory = safeGetData("Inventory")
+        local powerUps = inventory and inventory.PowerUps
+        if type(powerUps) == "table" then
+            local list = {}
+            for name, count in pairs(powerUps) do
+                if type(count) == "number" and count > 0 then
+                    table.insert(list, { name = name, count = count })
+                end
+            end
+            table.sort(list, function(a, b) return a.count > b.count end)
+
+            local parts = {}
+            for _, entry in ipairs(list) do
+                table.insert(parts, entry.name .. " x" .. entry.count)
+            end
+            if #parts > 0 then
+                stats.PowerUps = table.concat(parts, ", ")
+            end
+        end
+
         sendToWebhook({ type = "lobby", stats = stats })
     end)
 end
@@ -154,14 +214,14 @@ local function loopCheckLobbyCurrency()
             local c = safeGetData("Crystals") or 0
 
             if TARGET_GOLD and g >= TARGET_GOLD then
-                sendToWebhook({ type="lobby", stats={message="Target Gold Reached", Gold=g} })
+                sendToWebhook({ type = "lobby", stats = { message = "Target Gold Reached", Gold = g } })
                 task.wait(2)
                 LocalPlayer:Kick("Reached Gold Target")
                 break
             end
 
             if TARGET_CRYSTAL and c >= TARGET_CRYSTAL then
-                sendToWebhook({ type="lobby", stats={message="Target Crystal Reached", Crystals=c} })
+                sendToWebhook({ type = "lobby", stats = { message = "Target Crystal Reached", Crystals = c } })
                 task.wait(2)
                 LocalPlayer:Kick("Reached Crystal Target")
                 break
@@ -214,7 +274,8 @@ local function hookGameReward()
                     XP        = getVal(p_u_115.PlayerNameToXPMap),
                 }
 
-                sendToWebhook({ type = "game", rewards = rewards })
+                local imageUrl = getMapImageUrl(p_u_115.MapName)
+                sendToWebhook({ type = "game", rewards = rewards }, imageUrl)
             end)
 
             return oldDisplay(p_u_115)
