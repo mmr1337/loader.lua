@@ -108,11 +108,11 @@ local function httpRequest(method, url, body)
             local decodeSuccess, decoded = pcall(function()
                 return HttpService:JSONDecode(result.Body)
             end)
-            if decodeSuccess then
+            if decodeSuccess and type(decoded) == "table" then
                 return decoded
             end
         end
-        return true
+        return nil
     end
     
     return nil
@@ -139,6 +139,7 @@ end
 
 local function isSessionValid(sessionData)
     if not sessionData then return false end
+    if type(sessionData) ~= "table" then return false end
     if not sessionData.lastHeartbeat then return false end
     if not sessionData.jobId then return false end
     
@@ -160,7 +161,7 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
         local sessionId = HttpService:GenerateGUID(false)
         
         local existingSession = firebaseGet("party_sessions/" .. HOST_USERNAME)
-        if existingSession then
+        if existingSession and type(existingSession) == "table" then
             firebaseDelete("party_sessions/" .. HOST_USERNAME)
         end
         
@@ -178,7 +179,7 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
         local heartbeatThread = task.spawn(function()
             while game.PlaceId == LOBBY_PLACE_ID do
                 local data = firebaseGet("party_sessions/" .. HOST_USERNAME)
-                if data and data.sessionId == sessionId then
+                if data and type(data) == "table" and data.sessionId == sessionId then
                     data.lastHeartbeat = os.time()
                     firebaseSet("party_sessions/" .. HOST_USERNAME, data)
                 end
@@ -207,7 +208,7 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
             while not allJoinsReady do
                 local data = firebaseGet("party_sessions/" .. HOST_USERNAME)
                 
-                if data and data.readyJoins then
+                if data and type(data) == "table" and data.readyJoins then
                     local readyCount = 0
                     
                     for _, username in ipairs(expectedJoins) do
@@ -251,7 +252,7 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
                 while not allAccepted do
                     local data = firebaseGet("party_sessions/" .. HOST_USERNAME)
                     
-                    if data and data.acceptedJoins then
+                    if data and type(data) == "table" and data.acceptedJoins then
                         local acceptCount = 0
                         
                         for _, username in ipairs(expectedJoins) do
@@ -315,7 +316,7 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
             while not hasTeleported and game.PlaceId == LOBBY_PLACE_ID do
                 local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
                 
-                if sessionData and isSessionValid(sessionData) then
+                if sessionData and type(sessionData) == "table" and isSessionValid(sessionData) then
                     local hostJobId = sessionData.jobId
                     
                     if hostJobId and hostJobId ~= "" and hostJobId ~= myCurrentJobId and hostJobId ~= lastCheckedJobId then
@@ -345,7 +346,7 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
                         if hostPlayer then
                             local currentSessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
                             
-                            if currentSessionData and isSessionValid(currentSessionData) then
+                            if currentSessionData and type(currentSessionData) == "table" and isSessionValid(currentSessionData) then
                                 currentSessionData.readyJoins = currentSessionData.readyJoins or {}
                                 currentSessionData.readyJoins[LocalPlayer.Name] = true
                                 firebaseSet("party_sessions/" .. HOST_USERNAME, currentSessionData)
@@ -382,7 +383,7 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
                     
                     local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
                     
-                    if sessionData and isSessionValid(sessionData) then
+                    if sessionData and type(sessionData) == "table" and isSessionValid(sessionData) then
                         sessionData.acceptedJoins = sessionData.acceptedJoins or {}
                         sessionData.acceptedJoins[LocalPlayer.Name] = true
                         firebaseSet("party_sessions/" .. HOST_USERNAME, sessionData)
