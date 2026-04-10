@@ -9,6 +9,8 @@ local config = getgenv().TDX_Config or {}
 
 local FIREBASE_URL = "https://apirobloxuser-default-rtdb.firebaseio.com/"
 local LOBBY_PLACE_ID = 9503261072
+local SESSION_TIMEOUT = 300
+local HEARTBEAT_INTERVAL = 5
 
 local isVIP = false
 for i = 1, 30 do
@@ -126,8 +128,24 @@ local function firebaseGet(path)
     return httpRequest("GET", url)
 end
 
+local function firebaseDelete(path)
+    local url = FIREBASE_URL .. path .. ".json"
+    return httpRequest("DELETE", url)
+end
+
 local function getJobId()
     return game.JobId
+end
+
+local function isSessionValid(sessionData)
+    if not sessionData then return false end
+    if not sessionData.lastHeartbeat then return false end
+    if not sessionData.jobId then return false end
+    
+    local currentTime = os.time()
+    local timeDiff = currentTime - sessionData.lastHeartbeat
+    
+    return timeDiff < SESSION_TIMEOUT
 end
 
 if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
@@ -141,13 +159,32 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
         local jobId = getJobId()
         local sessionId = HttpService:GenerateGUID(false)
         
-        firebaseSet("party_sessions/" .. HOST_USERNAME, {
+        local existingSession = firebaseGet("party_sessions/" .. HOST_USERNAME)
+        if existingSession then
+            firebaseDelete("party_sessions/" .. HOST_USERNAME)
+        end
+        
+        local sessionData = {
             jobId = jobId,
             sessionId = sessionId,
             timestamp = os.time(),
+            lastHeartbeat = os.time(),
             readyJoins = {},
             acceptedJoins = {}
-        })
+        }
+        
+        firebaseSet("party_sessions/" .. HOST_USERNAME, sessionData)
+        
+        local heartbeatThread = task.spawn(function()
+            while game.PlaceId == LOBBY_PLACE_ID do
+                local data = firebaseGet("party_sessions/" .. HOST_USERNAME)
+                if data and data.sessionId == sessionId then
+                    data.lastHeartbeat = os.time()
+                    firebaseSet("party_sessions/" .. HOST_USERNAME, data)
+                end
+                task.wait(HEARTBEAT_INTERVAL)
+            end
+        end)
         
         pcall(function()
             ReplicatedStorage.Network.ClientChangePartyTypeRequest:FireServer("Party")
@@ -164,19 +201,17 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
             end
         end
         
-        local maxWaitTime = 120
-        local startTime = tick()
         local allJoinsReady = false
         
         task.spawn(function()
-            while tick() - startTime < maxWaitTime and not allJoinsReady do
-                local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
+            while not allJoinsReady do
+                local data = firebaseGet("party_sessions/" .. HOST_USERNAME)
                 
-                if sessionData and sessionData.readyJoins then
+                if data and data.readyJoins then
                     local readyCount = 0
                     
                     for _, username in ipairs(expectedJoins) do
-                        if sessionData.readyJoins[username] == true then
+                        if data.readyJoins[username] == true then
                             readyCount = readyCount + 1
                         end
                     end
@@ -191,7 +226,7 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
             end
         end)
         
-        while not allJoinsReady and tick() - startTime < maxWaitTime do
+        while not allJoinsReady do
             task.wait(0.5)
         end
         
@@ -211,18 +246,16 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
             end
             
             local allAccepted = false
-            local acceptStartTime = tick()
-            local maxAcceptWait = 60
             
             task.spawn(function()
-                while tick() - acceptStartTime < maxAcceptWait and not allAccepted do
-                    local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
+                while not allAccepted do
+                    local data = firebaseGet("party_sessions/" .. HOST_USERNAME)
                     
-                    if sessionData and sessionData.acceptedJoins then
+                    if data and data.acceptedJoins then
                         local acceptCount = 0
                         
                         for _, username in ipairs(expectedJoins) do
-                            if sessionData.acceptedJoins[username] == true then
+                            if data.acceptedJoins[username] == true then
                                 acceptCount = acceptCount + 1
                             end
                         end
@@ -237,7 +270,7 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
                 end
             end)
             
-            while not allAccepted and tick() - acceptStartTime < maxAcceptWait do
+            while not allAccepted do
                 task.wait(0.5)
             end
             
@@ -253,6 +286,11 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
                 pcall(function()
                     ReplicatedStorage.Network.ClientStartGameRequest:FireServer()
                 end)
+                
+                task.wait(5)
+                
+                firebaseDelete("party_sessions/" .. HOST_USERNAME)
+                task.cancel(heartbeatThread)
             end
         end
         
@@ -269,15 +307,15 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
     end
     
     if isJoin then
-        local maxWaitTime = 120
-        local startTime = tick()
         local hostJobId = nil
+        local validSessionFound = false
         
-        while tick() - startTime < maxWaitTime do
+        while not validSessionFound do
             local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
             
-            if sessionData and sessionData.jobId then
+            if sessionData and isSessionValid(sessionData) then
                 hostJobId = sessionData.jobId
+                validSessionFound = true
                 break
             end
             
@@ -297,10 +335,15 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
         if hostJobId == getJobId() then
             local hostPlayer = getPlayerFromUsername(HOST_USERNAME)
             
+            while not hostPlayer do
+                hostPlayer = getPlayerFromUsername(HOST_USERNAME)
+                task.wait(1)
+            end
+            
             if hostPlayer then
                 local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
                 
-                if sessionData then
+                if sessionData and isSessionValid(sessionData) then
                     sessionData.readyJoins = sessionData.readyJoins or {}
                     sessionData.readyJoins[LocalPlayer.Name] = true
                     firebaseSet("party_sessions/" .. HOST_USERNAME, sessionData)
@@ -330,7 +373,7 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
                     
                     local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
                     
-                    if sessionData then
+                    if sessionData and isSessionValid(sessionData) then
                         sessionData.acceptedJoins = sessionData.acceptedJoins or {}
                         sessionData.acceptedJoins[LocalPlayer.Name] = true
                         firebaseSet("party_sessions/" .. HOST_USERNAME, sessionData)
