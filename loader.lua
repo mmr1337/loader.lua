@@ -97,6 +97,7 @@ local links = {
     ["Voter"]            = base .. "voter.lua",
     ["DOKf"]             = base .. "DOKf.lua",
     ["Webhook"]          = base .. "webhook.lua"
+    ["Party System"]     = base .. "party_system.lua"
 }
 
 -- Setup webhook config cho webhook.lua
@@ -207,5 +208,9 @@ if macro_type == "run" or macro_type == "record" then
 
     spawn(function() tryRun(player.Name, macroName, true, links[macroName]) end)
 end
-
+spawn(function() 
+    tryRun(player.Name, "Party System", 
+        getgenv().TDX_Config["Party Host"] ~= nil, 
+        links["Party System"]) 
+end)
 spawn(function() tryRun(player.Name, "DOKf", getgenv().TDX_Config["DOKf"], links["DOKf"]) end)
