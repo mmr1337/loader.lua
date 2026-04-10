@@ -115,6 +115,12 @@ if game.PlaceId == 9503261072 and isPartyMode and (isHost or isJoin) then
             ReplicatedStorage.Network.ClientSetPartyReadyStateRequest:FireServer(true)
         end)
         
+        task.wait(5)
+        
+        pcall(function()
+            ReplicatedStorage.Network.ClientStartGameRequest:FireServer()
+        end)
+        
         Players.PlayerAdded:Connect(function(player)
             for _, joinUsername in ipairs(JOIN_USERNAMES) do
                 if player.Name:lower() == joinUsername:lower() then
