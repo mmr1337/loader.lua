@@ -78,64 +78,52 @@ local function generatePartyId()
     return HttpService:GenerateGUID(false):lower()
 end
 
-local function firebaseSet(path, data)
-    local url = FIREBASE_URL .. path .. ".json"
-    local jsonData = HttpService:JSONEncode(data)
+local function httpRequest(method, url, body)
+    local requestData = {
+        Url = url,
+        Method = method,
+        Headers = {["Content-Type"] = "application/json"}
+    }
     
-    return pcall(function()
+    if body then
+        requestData.Body = HttpService:JSONEncode(body)
+    end
+    
+    local success, result = pcall(function()
         if syn and syn.request then
-            syn.request({
-                Url = url,
-                Method = "PUT",
-                Headers = {["Content-Type"] = "application/json"},
-                Body = jsonData
-            })
+            return syn.request(requestData)
         elseif request then
-            request({
-                Url = url,
-                Method = "PUT",
-                Headers = {["Content-Type"] = "application/json"},
-                Body = jsonData
-            })
+            return request(requestData)
+        elseif http and http.request then
+            return http.request(requestData)
         else
-            HttpService:RequestAsync({
-                Url = url,
-                Method = "PUT",
-                Headers = {["Content-Type"] = "application/json"},
-                Body = jsonData
-            })
+            return HttpService:RequestAsync(requestData)
         end
     end)
+    
+    if success and result and result.StatusCode and result.StatusCode >= 200 and result.StatusCode < 300 then
+        if result.Body and result.Body ~= "null" and result.Body ~= "" then
+            local decodeSuccess, decoded = pcall(function()
+                return HttpService:JSONDecode(result.Body)
+            end)
+            if decodeSuccess then
+                return decoded
+            end
+        end
+        return true
+    end
+    
+    return nil
+end
+
+local function firebaseSet(path, data)
+    local url = FIREBASE_URL .. path .. ".json"
+    return httpRequest("PUT", url, data)
 end
 
 local function firebaseGet(path)
     local url = FIREBASE_URL .. path .. ".json"
-    
-    local success, result = pcall(function()
-        if syn and syn.request then
-            return syn.request({
-                Url = url,
-                Method = "GET"
-            })
-        elseif request then
-            return request({
-                Url = url,
-                Method = "GET"
-            })
-        else
-            return HttpService:RequestAsync({
-                Url = url,
-                Method = "GET"
-            })
-        end
-    end)
-    
-    if success and result and result.Body then
-        local data = HttpService:JSONDecode(result.Body)
-        return data
-    end
-    
-    return nil
+    return httpRequest("GET", url)
 end
 
 local function getJobId()
@@ -157,10 +145,11 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
             jobId = jobId,
             sessionId = sessionId,
             timestamp = os.time(),
-            readyJoins = {}
+            readyJoins = {},
+            acceptedJoins = {}
         })
         
-        local success = pcall(function()
+        pcall(function()
             ReplicatedStorage.Network.ClientChangePartyTypeRequest:FireServer("Party")
         end)
         
@@ -179,7 +168,7 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
         local startTime = tick()
         local allJoinsReady = false
         
-        spawn(function()
+        task.spawn(function()
             while tick() - startTime < maxWaitTime and not allJoinsReady do
                 local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
                 
@@ -198,7 +187,7 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
                     end
                 end
                 
-                task.wait(1)
+                task.wait(2)
             end
         end)
         
@@ -225,7 +214,7 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
             local acceptStartTime = tick()
             local maxAcceptWait = 60
             
-            spawn(function()
+            task.spawn(function()
                 while tick() - acceptStartTime < maxAcceptWait and not allAccepted do
                     local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
                     
@@ -244,7 +233,7 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
                         end
                     end
                     
-                    task.wait(1)
+                    task.wait(2)
                 end
             end)
             
@@ -292,10 +281,15 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
                 break
             end
             
-            task.wait(2)
+            task.wait(3)
         end
         
-        if hostJobId and hostJobId ~= getJobId() then
+        if hostJobId and hostJobId ~= "" and hostJobId ~= getJobId() then
+            local CoreGui = game:GetService("CoreGui")
+            if CoreGui.RobloxPromptGui:FindFirstChild("promptOverlay") then
+                CoreGui.RobloxPromptGui.promptOverlay.Visible = false
+            end
+            
             TeleportService:TeleportToPlaceInstance(LOBBY_PLACE_ID, hostJobId, LocalPlayer)
             return
         end
