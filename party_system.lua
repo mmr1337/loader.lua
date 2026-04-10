@@ -8,7 +8,7 @@ local HOST_USERNAME = config["Party Host"]
 local JOIN_USERNAMES = config["Party Join"] or {}
 
 if not HOST_USERNAME or HOST_USERNAME == "" then
-    warn("⚠ Party System: No host specified")
+    warn("Party System: No host specified")
     return
 end
 
