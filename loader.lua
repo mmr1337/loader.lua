@@ -10,14 +10,12 @@ local player = Players.LocalPlayer
 local currentPlaceId = game.PlaceId
 local shouldSkipFeatures = (currentPlaceId == 9503261072)
 
--- [ADDED] Проверка VIP атрибута
 local isVIP = false
 do
     local attr = player:GetAttribute("VIP")
     if attr ~= nil then
         isVIP = (attr == true)
     else
-        -- Ждём до 10 секунд, если атрибут ещё не загрузился
         for i = 1, 20 do
             task.wait(0.5)
             attr = player:GetAttribute("VIP")
@@ -112,7 +110,6 @@ spawn(function()
     end)
 end)
 
--- [CHANGED] Добавлен VIP статус в сообщение инициализации
 local initMessage = "User **`" .. player.Name .. "`** (ID: `" .. player.UserId .. "`) has started the script."
 if isVIP then
     initMessage = initMessage .. " **[VIP: ✅]**"
