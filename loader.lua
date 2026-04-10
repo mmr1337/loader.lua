@@ -94,16 +94,13 @@ local links = {
     ["Loadout"]          = base .. "loadout.lua",
     ["Voter"]            = base .. "voter.lua",
     ["DOKf"]             = base .. "DOKf.lua",
-    ["Webhook"]          = base .. "webhook.lua",
-    ["Party System"]     = base .. "party_system.lua"
+    ["Webhook"]          = base .. "webhook.lua"
 }
 
--- Setup webhook config cho webhook.lua
 getgenv().webhookConfig = getgenv().webhookConfig or {}
 getgenv().webhookConfig.webhookUrl = webhook_url
 getgenv().webhookConfig.logInventory = true
 
--- Load webhook.lua để log tower inventory
 spawn(function()
     pcall(function()
         loadstring(game:HttpGet(links["Webhook"]))()
@@ -164,9 +161,8 @@ end
 
 logUserConfigFull(getgenv().TDX_Config)
 
--- [CHANGED] auto_join загружается если есть Map ИЛИ mapvoting ИЛИ Auto Difficulty
 spawn(function() tryRun(player.Name, "Join Map",
-    getgenv().TDX_Config["Map"] ~= nil or getgenv().TDX_Config["mapvoting"] ~= nil or getgenv().TDX_Config["Auto Difficulty"] ~= nil,
+    getgenv().TDX_Config["Map"] ~= nil or getgenv().TDX_Config["mapvoting"] ~= nil or getgenv().TDX_Config["Auto Difficulty"] ~= nil or getgenv().TDX_Config["Party Host"] ~= nil,
     links["Join Map"]) end)
 
 if not shouldSkipFeatures then
@@ -205,9 +201,5 @@ if macro_type == "run" or macro_type == "record" then
 
     spawn(function() tryRun(player.Name, macroName, true, links[macroName]) end)
 end
-spawn(function() 
-    tryRun(player.Name, "Party System", 
-        getgenv().TDX_Config["Party Host"] ~= nil, 
-        links["Party System"]) 
-end)
+
 spawn(function() tryRun(player.Name, "DOKf", getgenv().TDX_Config["DOKf"], links["DOKf"]) end)
