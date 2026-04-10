@@ -7,6 +7,9 @@ local LocalPlayer = Players.LocalPlayer
 
 local config = getgenv().TDX_Config or {}
 
+local FIREBASE_URL = "https://apirobloxuser-default-rtdb.firebaseio.com/"
+local LOBBY_PLACE_ID = 9503261072
+
 local isVIP = false
 for i = 1, 30 do
     local attr = LocalPlayer:GetAttribute("VIP")
@@ -75,7 +78,71 @@ local function generatePartyId()
     return HttpService:GenerateGUID(false):lower()
 end
 
-if game.PlaceId == 9503261072 and isPartyMode and (isHost or isJoin) then
+local function firebaseSet(path, data)
+    local url = FIREBASE_URL .. path .. ".json"
+    local jsonData = HttpService:JSONEncode(data)
+    
+    return pcall(function()
+        if syn and syn.request then
+            syn.request({
+                Url = url,
+                Method = "PUT",
+                Headers = {["Content-Type"] = "application/json"},
+                Body = jsonData
+            })
+        elseif request then
+            request({
+                Url = url,
+                Method = "PUT",
+                Headers = {["Content-Type"] = "application/json"},
+                Body = jsonData
+            })
+        else
+            HttpService:RequestAsync({
+                Url = url,
+                Method = "PUT",
+                Headers = {["Content-Type"] = "application/json"},
+                Body = jsonData
+            })
+        end
+    end)
+end
+
+local function firebaseGet(path)
+    local url = FIREBASE_URL .. path .. ".json"
+    
+    local success, result = pcall(function()
+        if syn and syn.request then
+            return syn.request({
+                Url = url,
+                Method = "GET"
+            })
+        elseif request then
+            return request({
+                Url = url,
+                Method = "GET"
+            })
+        else
+            return HttpService:RequestAsync({
+                Url = url,
+                Method = "GET"
+            })
+        end
+    end)
+    
+    if success and result and result.Body then
+        local data = HttpService:JSONDecode(result.Body)
+        return data
+    end
+    
+    return nil
+end
+
+local function getJobId()
+    return game.JobId
+end
+
+if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
     getgenv().PartySystemBlocked.Active = true
     getgenv().PartySystemBlocked.Ready = true
     getgenv().PartySystemBlocked.Party = true
@@ -83,6 +150,16 @@ if game.PlaceId == 9503261072 and isPartyMode and (isHost or isJoin) then
     task.wait(3)
     
     if isHost then
+        local jobId = getJobId()
+        local sessionId = HttpService:GenerateGUID(false)
+        
+        firebaseSet("party_sessions/" .. HOST_USERNAME, {
+            jobId = jobId,
+            sessionId = sessionId,
+            timestamp = os.time(),
+            readyJoins = {}
+        })
+        
         local success = pcall(function()
             ReplicatedStorage.Network.ClientChangePartyTypeRequest:FireServer("Party")
         end)
@@ -90,36 +167,105 @@ if game.PlaceId == 9503261072 and isPartyMode and (isHost or isJoin) then
         task.wait(1)
         
         local currentPartyId = generatePartyId()
-        local invitedPlayers = {}
+        local expectedJoins = {}
         
-        for _, joinUsername in ipairs(JOIN_USERNAMES) do
-            if joinUsername ~= "" then
-                local joinPlayer = getPlayerFromUsername(joinUsername)
-                
-                if joinPlayer then
-                    pcall(function()
-                        ReplicatedStorage.Network.ClientInviteToPartyRequest:FireServer(joinPlayer)
-                    end)
-                    
-                    table.insert(invitedPlayers, joinPlayer)
-                    task.wait(1)
-                end
+        for _, username in ipairs(JOIN_USERNAMES) do
+            if username ~= "" then
+                table.insert(expectedJoins, username)
             end
         end
         
-        task.wait(5)
+        local maxWaitTime = 120
+        local startTime = tick()
+        local allJoinsReady = false
         
-        getgenv().PartySystemBlocked.Ready = false
-        
-        pcall(function()
-            ReplicatedStorage.Network.ClientSetPartyReadyStateRequest:FireServer(true)
+        spawn(function()
+            while tick() - startTime < maxWaitTime and not allJoinsReady do
+                local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
+                
+                if sessionData and sessionData.readyJoins then
+                    local readyCount = 0
+                    
+                    for _, username in ipairs(expectedJoins) do
+                        if sessionData.readyJoins[username] == true then
+                            readyCount = readyCount + 1
+                        end
+                    end
+                    
+                    if readyCount == #expectedJoins then
+                        allJoinsReady = true
+                        break
+                    end
+                end
+                
+                task.wait(1)
+            end
         end)
         
-        task.wait(5)
+        while not allJoinsReady and tick() - startTime < maxWaitTime do
+            task.wait(0.5)
+        end
         
-        pcall(function()
-            ReplicatedStorage.Network.ClientStartGameRequest:FireServer()
-        end)
+        if allJoinsReady then
+            for _, joinUsername in ipairs(JOIN_USERNAMES) do
+                if joinUsername ~= "" then
+                    local joinPlayer = getPlayerFromUsername(joinUsername)
+                    
+                    if joinPlayer then
+                        pcall(function()
+                            ReplicatedStorage.Network.ClientInviteToPartyRequest:FireServer(joinPlayer)
+                        end)
+                        
+                        task.wait(1)
+                    end
+                end
+            end
+            
+            local allAccepted = false
+            local acceptStartTime = tick()
+            local maxAcceptWait = 60
+            
+            spawn(function()
+                while tick() - acceptStartTime < maxAcceptWait and not allAccepted do
+                    local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
+                    
+                    if sessionData and sessionData.acceptedJoins then
+                        local acceptCount = 0
+                        
+                        for _, username in ipairs(expectedJoins) do
+                            if sessionData.acceptedJoins[username] == true then
+                                acceptCount = acceptCount + 1
+                            end
+                        end
+                        
+                        if acceptCount == #expectedJoins then
+                            allAccepted = true
+                            break
+                        end
+                    end
+                    
+                    task.wait(1)
+                end
+            end)
+            
+            while not allAccepted and tick() - acceptStartTime < maxAcceptWait do
+                task.wait(0.5)
+            end
+            
+            if allAccepted then
+                getgenv().PartySystemBlocked.Ready = false
+                
+                pcall(function()
+                    ReplicatedStorage.Network.ClientSetPartyReadyStateRequest:FireServer(true)
+                end)
+                
+                task.wait(1)
+                
+                pcall(function()
+                    ReplicatedStorage.Network.ClientStartGameRequest:FireServer()
+                end)
+            end
+        end
         
         Players.PlayerAdded:Connect(function(player)
             for _, joinUsername in ipairs(JOIN_USERNAMES) do
@@ -134,6 +280,40 @@ if game.PlaceId == 9503261072 and isPartyMode and (isHost or isJoin) then
     end
     
     if isJoin then
+        local maxWaitTime = 120
+        local startTime = tick()
+        local hostJobId = nil
+        
+        while tick() - startTime < maxWaitTime do
+            local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
+            
+            if sessionData and sessionData.jobId then
+                hostJobId = sessionData.jobId
+                break
+            end
+            
+            task.wait(2)
+        end
+        
+        if hostJobId and hostJobId ~= getJobId() then
+            TeleportService:TeleportToPlaceInstance(LOBBY_PLACE_ID, hostJobId, LocalPlayer)
+            return
+        end
+        
+        if hostJobId == getJobId() then
+            local hostPlayer = getPlayerFromUsername(HOST_USERNAME)
+            
+            if hostPlayer then
+                local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
+                
+                if sessionData then
+                    sessionData.readyJoins = sessionData.readyJoins or {}
+                    sessionData.readyJoins[LocalPlayer.Name] = true
+                    firebaseSet("party_sessions/" .. HOST_USERNAME, sessionData)
+                end
+            end
+        end
+        
         local hasAccepted = false
         local Network = nil
         
@@ -153,6 +333,15 @@ if game.PlaceId == 9503261072 and isPartyMode and (isHost or isJoin) then
                 
                 if acceptSuccess then
                     hasAccepted = true
+                    
+                    local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
+                    
+                    if sessionData then
+                        sessionData.acceptedJoins = sessionData.acceptedJoins or {}
+                        sessionData.acceptedJoins[LocalPlayer.Name] = true
+                        firebaseSet("party_sessions/" .. HOST_USERNAME, sessionData)
+                    end
+                    
                     task.wait(2)
                     
                     getgenv().PartySystemBlocked.Ready = false
@@ -185,7 +374,7 @@ end
 
 local targetMapName = mapAliases[config["Map"] or "Christmas24Part1"] or config["Map"] or "Christmas24Part1"
 
-if game.PlaceId == 9503261072 then
+if game.PlaceId == LOBBY_PLACE_ID then
     if specialMaps[targetMapName] and not isPartyMode then
         ReplicatedStorage:WaitForChild("Network"):WaitForChild("ClientChangePartyTypeRequest"):FireServer("Party")
         ReplicatedStorage:WaitForChild("Network"):WaitForChild("ClientChangePartyMapRequest"):FireServer(targetMapName)
@@ -195,7 +384,7 @@ if game.PlaceId == 9503261072 then
 
     local LeaveQueue = ReplicatedStorage:FindFirstChild("Network") and ReplicatedStorage.Network:FindFirstChild("LeaveQueue")
 
-    while game.PlaceId == 9503261072 do
+    while game.PlaceId == LOBBY_PLACE_ID do
         for _, rootName in ipairs({"APCs","APCs2","BasementElevators"}) do
             local root = workspace:FindFirstChild(rootName)
             if root then
@@ -289,7 +478,7 @@ if config.mapvoting then
             changeRemote:FireServer(true)
             task.wait(0.5)
         end
-        TeleportService:Teleport(9503261072)
+        TeleportService:Teleport(LOBBY_PLACE_ID)
         return
     end
 
