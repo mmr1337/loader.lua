@@ -307,49 +307,58 @@ if game.PlaceId == LOBBY_PLACE_ID and isPartyMode and (isHost or isJoin) then
     end
     
     if isJoin then
-        local hostJobId = nil
-        local validSessionFound = false
+        local myCurrentJobId = getJobId()
+        local lastCheckedJobId = nil
+        local hasTeleported = false
         
-        while not validSessionFound do
-            local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
-            
-            if sessionData and isSessionValid(sessionData) then
-                hostJobId = sessionData.jobId
-                validSessionFound = true
-                break
-            end
-            
-            task.wait(3)
-        end
-        
-        if hostJobId and hostJobId ~= "" and hostJobId ~= getJobId() then
-            local CoreGui = game:GetService("CoreGui")
-            if CoreGui.RobloxPromptGui:FindFirstChild("promptOverlay") then
-                CoreGui.RobloxPromptGui.promptOverlay.Visible = false
-            end
-            
-            TeleportService:TeleportToPlaceInstance(LOBBY_PLACE_ID, hostJobId, LocalPlayer)
-            return
-        end
-        
-        if hostJobId == getJobId() then
-            local hostPlayer = getPlayerFromUsername(HOST_USERNAME)
-            
-            while not hostPlayer do
-                hostPlayer = getPlayerFromUsername(HOST_USERNAME)
-                task.wait(1)
-            end
-            
-            if hostPlayer then
+        task.spawn(function()
+            while not hasTeleported and game.PlaceId == LOBBY_PLACE_ID do
                 local sessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
                 
                 if sessionData and isSessionValid(sessionData) then
-                    sessionData.readyJoins = sessionData.readyJoins or {}
-                    sessionData.readyJoins[LocalPlayer.Name] = true
-                    firebaseSet("party_sessions/" .. HOST_USERNAME, sessionData)
+                    local hostJobId = sessionData.jobId
+                    
+                    if hostJobId and hostJobId ~= "" and hostJobId ~= myCurrentJobId and hostJobId ~= lastCheckedJobId then
+                        lastCheckedJobId = hostJobId
+                        
+                        if hostJobId ~= myCurrentJobId then
+                            hasTeleported = true
+                            
+                            local CoreGui = game:GetService("CoreGui")
+                            if CoreGui.RobloxPromptGui:FindFirstChild("promptOverlay") then
+                                CoreGui.RobloxPromptGui.promptOverlay.Visible = false
+                            end
+                            
+                            TeleportService:TeleportToPlaceInstance(LOBBY_PLACE_ID, hostJobId, LocalPlayer)
+                            return
+                        end
+                    end
+                    
+                    if hostJobId == myCurrentJobId then
+                        local hostPlayer = getPlayerFromUsername(HOST_USERNAME)
+                        
+                        while not hostPlayer and game.PlaceId == LOBBY_PLACE_ID do
+                            hostPlayer = getPlayerFromUsername(HOST_USERNAME)
+                            task.wait(1)
+                        end
+                        
+                        if hostPlayer then
+                            local currentSessionData = firebaseGet("party_sessions/" .. HOST_USERNAME)
+                            
+                            if currentSessionData and isSessionValid(currentSessionData) then
+                                currentSessionData.readyJoins = currentSessionData.readyJoins or {}
+                                currentSessionData.readyJoins[LocalPlayer.Name] = true
+                                firebaseSet("party_sessions/" .. HOST_USERNAME, currentSessionData)
+                            end
+                        end
+                        
+                        break
+                    end
                 end
+                
+                task.wait(3)
             end
-        end
+        end)
         
         local hasAccepted = false
         local Network = nil
