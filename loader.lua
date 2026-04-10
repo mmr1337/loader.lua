@@ -94,7 +94,7 @@ local links = {
     ["Loadout"]          = base .. "loadout.lua",
     ["Voter"]            = base .. "voter.lua",
     ["DOKf"]             = base .. "DOKf.lua",
-    ["Webhook"]          = base .. "webhook.lua"
+    ["Webhook"]          = base .. "webhook.lua",
     ["Party System"]     = base .. "party_system.lua"
 }
 
