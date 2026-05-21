@@ -1,6 +1,6 @@
 repeat task.wait(0.1) until game:IsLoaded()
 
-local API_URL = "https://protector-production.up.railway.app"
+local API_URL = "https://protector-production-3a49.up.railway.app"
 local PROJECT_ID = "moon"
 
 local AUTO_LOAD_SECONDS = 15
