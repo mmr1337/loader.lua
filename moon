@@ -12,8 +12,8 @@ env.script_key = nil
 env.LUAPROT_KEY = nil
 
 local SCRIPTS_BY_GAME_ID = {
-    [15002061926] = "88512799538369470635",
-    [3541611379] = "41695665062826643352",
+    [15002061926] = "88512799538369470635", --Death Ball
+    [3541611379] = "41695665062826643352", --TDX
 }
 
 local SCRIPT_ID = SCRIPTS_BY_GAME_ID[game.GameId]
@@ -31,5 +31,4 @@ end
 
 sdk.scriptId = SCRIPT_ID
 
--- keyless main script loads for everyone
 sdk:loadScript()
