@@ -525,31 +525,10 @@ local function StartRebuildSystem(rebuildEntry, towerRecords, skipTypesMap)
                 local job = table.remove(jobQueue, 1)
                 task.spawn(function()
                     setThreadIdentity(2)
-                    local records = job.records
-                    local placeRecord = nil
-                    local upgradesByPath = {[1] = {}, [2] = {}}
-                    local targetRecords, movingRecords = {}, {}
-
-                    for _, record in ipairs(records) do
-                        local action = record.entry
-                        if action.TowerPlaced then placeRecord = record
-                        elseif action.TowerUpgraded then table.insert(upgradesByPath[action.UpgradePath] or {}, record)
-                        elseif action.TowerTargetChange then table.insert(targetRecords, record)
-                        elseif action.towermoving then table.insert(movingRecords, record) end
-                    end
-
-                    -- Tìm entry có location cuối cùng và entry skill cuối cùng
-                    local finalPosEntry = nil
-                    local skillEntry = nil
-                    for _, r in ipairs(movingRecords) do
-                        local e = r.entry
-                        if e.location and e.location ~= "no_pos" then
-                            finalPosEntry = e
-                        else
-                            skillEntry = e
-                        end
-                    end
-                    if not skillEntry then skillEntry = finalPosEntry end
+                    local state = job.records
+                    local placeRecord = state.placeRecord
+                    local finalPosEntry = state.lastMovingWithPos
+                    local skillEntry = state.lastMovingNoPos or state.lastMovingWithPos
 
                     local placePos, newAxisX
                     if finalPosEntry and placeRecord then
@@ -581,12 +560,16 @@ local function StartRebuildSystem(rebuildEntry, towerRecords, skipTypesMap)
                     end
 
                     if rebuildSuccess and newAxisX then
-                        if #upgradesByPath[1] > 0 then if not UpgradeTowerRetry(newAxisX, 1, #upgradesByPath[1]) then rebuildSuccess = false end end
-                        if rebuildSuccess and #upgradesByPath[2] > 0 then if not UpgradeTowerRetry(newAxisX, 2, #upgradesByPath[2]) then rebuildSuccess = false end end
+                        local c1, c2 = state.upgradeCount[1], state.upgradeCount[2]
+                        if c1 > 0 then if not UpgradeTowerRetry(newAxisX, 1, c1) then rebuildSuccess = false end end
+                        if rebuildSuccess and c2 > 0 then if not UpgradeTowerRetry(newAxisX, 2, c2) then rebuildSuccess = false end end
                     end
 
                     if rebuildSuccess then
-                        for _, r in ipairs(targetRecords) do ChangeTargetRetry(tonumber(r.entry.TowerTargetChange), r.entry.TargetWanted) end
+                        if state.lastTarget then
+                            local r = state.lastTarget
+                            ChangeTargetRetry(tonumber(r.entry.TowerTargetChange), r.entry.TargetWanted)
+                        end
                         if not finalPosEntry and skillEntry then
                             task.spawn(function()
                                 local axisToCheck = newAxisX or skillEntry.towermoving
@@ -609,19 +592,16 @@ local function StartRebuildSystem(rebuildEntry, towerRecords, skipTypesMap)
     task.spawn(function()
         while true do
             local jobsAdded = false
-            for x, records in pairs(towerRecords) do
+            for x, state in pairs(towerRecords) do
                 if not axisToHash[x] and not activeJobs[x] and not (config.ForceRebuildEvenIfSold == false and soldPositions[x]) then
-                    local towerType = nil
-                    for _, record in ipairs(records) do
-                        if record.entry.TowerPlaced then towerType = record.entry.TowerPlaced; break end
-                    end
+                    local towerType = state.placeRecord and state.placeRecord.entry.TowerPlaced
                     if towerType then
                         local shouldSkip = skipTypesMap[towerType] ~= nil
                         if not shouldSkip then
                             rebuildAttempts[x] = (rebuildAttempts[x] or 0) + 1
                             if not config.MaxRebuildRetry or rebuildAttempts[x] <= config.MaxRebuildRetry then
                                 activeJobs[x] = true
-                                table.insert(jobQueue, { x = x, records = records, priority = GetTowerPriority(towerType), deathTime = tick() })
+                                table.insert(jobQueue, { x = x, records = state, priority = GetTowerPriority(towerType), deathTime = tick() })
                                 jobsAdded = true
                             end
                         end
@@ -965,7 +945,12 @@ local function RunMacroRunner()
              local args = {tonumber(entry.TowerA1), entry.TowerPlaced, pos, tonumber(entry.Rotation or 0)}
              WaitForCash(entry.TowerPlaceCost)
              PlaceTowerRetry(args, pos.X)
-             towerRecords[pos.X] = towerRecords[pos.X] or {}; table.insert(towerRecords[pos.X], { line = i, entry = entry })
+             -- Problem: towerRecords giữ list vô hạn record mỗi tower, phình to nếu tower rebuild nhiều lần
+             -- Solution: struct rút gọn per-axis (đếm upgrade, giữ bản target/moving cuối cùng)
+             -- Status: done
+             local state = towerRecords[pos.X] or { upgradeCount = {[1] = 0, [2] = 0} }
+             towerRecords[pos.X] = state
+             state.placeRecord = { line = i, entry = entry }
         elseif entry.TowerUpgraded then
              if globalEnv.TDX_Config.UpgradeByTiming then WaitForTiming(entry, gameUI, waveIndex) end
              local axis, path = tonumber(entry.TowerUpgraded), entry.UpgradePath
@@ -973,18 +958,28 @@ local function RunMacroRunner()
              while j <= #mainMacro do
                  local n = mainMacro[j]
                  if n.TowerUpgraded and tonumber(n.TowerUpgraded) == axis and n.UpgradePath == path then
-                     batchCount = batchCount + 1; table.insert(towerRecords[axis] or {}, { line = j, entry = n }); j = j + 1
+                     batchCount = batchCount + 1; j = j + 1
                  else break end
              end
              UpgradeTowerRetry(axis, path, batchCount)
-             table.insert(towerRecords[axis] or {}, { line = i, entry = entry })
+             local state = towerRecords[axis] or { upgradeCount = {[1] = 0, [2] = 0} }
+             towerRecords[axis] = state
+             state.upgradeCount[path] = (state.upgradeCount[path] or 0) + batchCount
              i = i + (batchCount - 1)
         elseif entry.TowerTargetChange then
              local axis = tonumber(entry.TowerTargetChange)
-             table.insert(towerRecords[axis] or {}, { line = i, entry = entry })
+             local state = towerRecords[axis] or { upgradeCount = {[1] = 0, [2] = 0} }
+             towerRecords[axis] = state
+             state.lastTarget = { line = i, entry = entry }
         elseif entry.towermoving then
              local axis = entry.towermoving
-             table.insert(towerRecords[axis] or {}, { line = i, entry = entry })
+             local state = towerRecords[axis] or { upgradeCount = {[1] = 0, [2] = 0} }
+             towerRecords[axis] = state
+             if entry.location and entry.location ~= "no_pos" then
+                 state.lastMovingWithPos = entry
+             else
+                 state.lastMovingNoPos = entry
+             end
         elseif entry.PlayerPosition then
              if globalEnv.TDX_Config.MovePlayer then MovePlayerTo(entry.PlayerPosition) end
         elseif entry.SellTower then
