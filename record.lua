@@ -63,6 +63,14 @@ local CurrentConfig = globalEnv.TDX_Recorder_Context.Config
 local RebuildingCache = globalEnv.TDX_Recorder_Context.RebuildingCache
 local HashToPosCache = globalEnv.TDX_Recorder_Context.HashToPosCache
 
+-- Problem: FindTower quét O(T) toàn bộ towers mỗi lần gọi
+-- Solution: reverse map axis X -> hashStr, tra cứu O(1)
+-- Status: done
+local axisToHash = globalEnv.TDX_Recorder_Context.AxisToHash or {}
+globalEnv.TDX_Recorder_Context.AxisToHash = axisToHash
+
+local markExistCacheDirty -- forward declaration; defined below
+
 local function safeWriteFile(path, content) if writefile then pcall(writefile, path, content) end end
 local function safeReadFile(path)
     if isfile and isfile(path) and readfile then
@@ -160,9 +168,30 @@ local function appendToJsonFile(entry)
     elseif entry.towermoving then
         x = entry.towermoving
     end
-    if x then
-        towersByAxis[x] = towersByAxis[x] or {}
-        table.insert(towersByAxis[x], { line = lineIndex, entry = entry })
+    if not x then return end
+
+    -- Problem: towersByAxis từng giữ list vô hạn record mỗi tower, phình to theo thời gian sống
+    -- Solution: giữ struct rút gọn per-axis (đếm upgrade, giữ bản target/moving cuối cùng)
+    -- Status: done
+    local state = towersByAxis[x]
+    if not state then
+        state = { upgradeCount = {[1] = 0, [2] = 0} }
+        towersByAxis[x] = state
+    end
+    if entry.TowerPlaced then
+        state.placeRecord = { line = lineIndex, entry = entry }
+        state.firstPlaceLine = state.firstPlaceLine or lineIndex
+    elseif entry.TowerUpgraded then
+        local path = entry.UpgradePath
+        state.upgradeCount[path] = (state.upgradeCount[path] or 0) + 1
+    elseif entry.TowerTargetChange then
+        state.lastTarget = { line = lineIndex, entry = entry }
+    elseif entry.towermoving then
+        if entry.location and entry.location ~= "no_pos" then
+            state.lastMovingWithPos = entry
+        else
+            state.lastMovingNoPos = entry
+        end
     end
 end
 
@@ -318,6 +347,7 @@ local function parseMacroLine(line)
             local w, t = getCurrentWaveAndTime()
             local entry = { SellTower = pos.x, Wave = w, Time = convertTimeToNumber(t) }
             HashToPosCache[hashStr] = nil
+            axisToHash[pos.x] = nil
             return {entry}
         end
     end
@@ -509,11 +539,16 @@ local function ForceSellTower(hash)
 end
 
 FindTower = function(mode, value)
-    local towers = GameModules.TowerClass.GetTowers()
     if mode == "Axis" then
-        for hash, tower in pairs(towers) do
-            if tower.SpawnCFrame and typeof(tower.SpawnCFrame) == "CFrame" and tower.SpawnCFrame.Position.X == value then
-                return hash, tower
+        local hashStr = axisToHash[value]
+        if hashStr then
+            local hash = tonumber(hashStr)
+            if hash then
+                local tower = GameModules.TowerClass.GetTowers()[hash]
+                if tower then return hash, tower end
+                -- stale, evict
+                HashToPosCache[hashStr] = nil
+                axisToHash[value] = nil
             end
         end
     end
@@ -669,28 +704,10 @@ local function UseMovingSkillRetry(axisValue, skillIndex, location)
     return false
 end
 
-local function RebuildTowerSequence(records, jobAxisX)
-    local placeRecord, upgradesByPath, targetRecords, movingRecords = nil, {[1]={}, [2]={}}, {}, {}
-    for _, r in ipairs(records) do
-        local e = r.entry
-        if e.TowerPlaced then placeRecord = r
-        elseif e.TowerUpgraded then table.insert(upgradesByPath[e.UpgradePath] or {}, r)
-        elseif e.TowerTargetChange then table.insert(targetRecords, r)
-        elseif e.towermoving then table.insert(movingRecords, r) end
-    end
-
-    local lastWithPos = nil
-    local lastNoPos = nil
-    for _, r in ipairs(movingRecords) do
-        local e = r.entry
-        if e.location and e.location ~= "no_pos" then
-            lastWithPos = e
-        else
-            lastNoPos = e
-        end
-    end
-    local finalPosEntry = lastWithPos  -- entry quyết định vị trí place
-    local skillEntry = lastNoPos or lastWithPos  -- entry để fire skill nếu không có pos
+local function RebuildTowerSequence(state, jobAxisX)
+    local placeRecord = state.placeRecord
+    local finalPosEntry = state.lastMovingWithPos  -- entry quyết định vị trí place
+    local skillEntry = state.lastMovingNoPos or state.lastMovingWithPos  -- entry để fire skill nếu không có pos
 
     local placePos = nil
     local newAxisX = nil
@@ -721,17 +738,23 @@ local function RebuildTowerSequence(records, jobAxisX)
             rebuildAttempts[newAxisX] = rebuildAttempts[jobAxisX]
             rebuildAttempts[jobAxisX] = nil
             RebuildingCache[newAxisX] = true
+            -- cập nhật reverse map theo axis mới
+            local hashStr = axisToHash[jobAxisX]
+            if hashStr then axisToHash[newAxisX] = hashStr; axisToHash[jobAxisX] = nil end
             markExistCacheDirty()
         end
     end
     if success and newAxisX then
-        local max1, max2 = #upgradesByPath[1], #upgradesByPath[2]
+        local max1, max2 = state.upgradeCount[1], state.upgradeCount[2]
         if max1 > 0 or max2 > 0 then
             if not UpgradeTowerToLevel(newAxisX, max1, max2) then success = false end
         end
     end
     if success then
-        for _, r in ipairs(targetRecords) do ChangeTargetRetry(tonumber(r.entry.TowerTargetChange), r.entry.TargetWanted) end
+        if state.lastTarget then
+            local r = state.lastTarget
+            ChangeTargetRetry(tonumber(r.entry.TowerTargetChange), r.entry.TargetWanted)
+        end
         if not finalPosEntry and skillEntry then
             task.spawn(function()
                 local axisToCheck = newAxisX or skillEntry.towermoving
@@ -752,7 +775,7 @@ local deadTowers, nextDeathId, jobQueue, activeJobs = {}, 1, {}, {}
 local loopTimers = { pending = 0, logic = 0 }
 local existCache = {}
 local existCacheDirty = true
-local function markExistCacheDirty() existCacheDirty = true end
+markExistCacheDirty = function() existCacheDirty = true end
 
 local function GetTowerPriority(towerName)
     for priority, name in ipairs(CurrentConfig.PriorityRebuildOrder or {}) do
@@ -775,7 +798,9 @@ if origTCNew then
         if tower and tower.Hash then
             local pos = GetTowerSpawnPosition(tower)
             if pos then
-                HashToPosCache[tostring(tower.Hash)] = {x = pos.X, y = pos.Y, z = pos.Z}
+                local hashStr = tostring(tower.Hash)
+                HashToPosCache[hashStr] = {x = pos.X, y = pos.Y, z = pos.Z}
+                axisToHash[pos.X] = hashStr
                 markExistCacheDirty()
             end
         end
@@ -788,7 +813,13 @@ if origTCDestroy then
     GameModules.TowerClass.Destroy = function(tower, ...)
         local hash = tower and tower.Hash
         origTCDestroy(tower, ...)
-        if hash then HashToPosCache[tostring(hash)] = nil; markExistCacheDirty() end
+        if hash then
+            local hashStr = tostring(hash)
+            local pos = HashToPosCache[hashStr]
+            if pos then axisToHash[pos.x] = nil end
+            HashToPosCache[hashStr] = nil
+            markExistCacheDirty()
+        end
     end
 end
 
@@ -802,11 +833,15 @@ do
                 local hashStr = tostring(hash)
                 existingHashes[hashStr] = true
                 HashToPosCache[hashStr] = {x = pos.X, y = pos.Y, z = pos.Z}
+                axisToHash[pos.X] = hashStr
             end
         end
     end
-    for hashStr in pairs(HashToPosCache) do
-        if not existingHashes[hashStr] then HashToPosCache[hashStr] = nil end
+    for hashStr, pos in pairs(HashToPosCache) do
+        if not existingHashes[hashStr] then
+            axisToHash[pos.x] = nil
+            HashToPosCache[hashStr] = nil
+        end
     end
 end
 
@@ -902,17 +937,17 @@ RunService.RenderStepped:Connect(function(dt)
     end
 
     local added = false
-    for x, recs in pairs(towersByAxis) do
+    for x, state in pairs(towersByAxis) do
         if not soldAxis[x] and not existCache[x] then
             if not activeJobs[x] then
                 if not deadTowers[x] then deadTowers[x] = {time=tick(), id=nextDeathId}; nextDeathId=nextDeathId+1 end
                 local tType, line
-                for _, r in ipairs(recs) do if r.entry.TowerPlaced then tType=r.entry.TowerPlaced; line=r.line; break end end
+                if state.placeRecord then tType = state.placeRecord.entry.TowerPlaced; line = state.placeRecord.line end
                 if tType then
                     rebuildAttempts[x] = (rebuildAttempts[x] or 0) + 1
                     if not CurrentConfig.MaxRebuildRetry or rebuildAttempts[x] <= CurrentConfig.MaxRebuildRetry then
                         activeJobs[x] = true
-                        table.insert(jobQueue, { x=x, records=recs, priority=GetTowerPriority(tType), deathTime=deadTowers[x].time, towerName=tType, firstPlaceLine=line })
+                        table.insert(jobQueue, { x=x, records=state, priority=GetTowerPriority(tType), deathTime=deadTowers[x].time, towerName=tType, firstPlaceLine=line })
                         added = true
                     end
                 end
