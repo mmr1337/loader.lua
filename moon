@@ -6,7 +6,7 @@ end
 
 local USER_KEY = clean(env.lp_key or (_G and _G.lp_key) or "")
 
-env.MOON_PREMIUM = false
+env.MOON_PREMIUM = true
 env.MOON_KEY = nil
 env.script_key = nil
 env.LUAPROT_KEY = nil
